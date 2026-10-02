@@ -429,6 +429,56 @@ class Music(commands.Cog):
         state.queue.clear()
         await interaction.response.send_message("Queue cleared.")
 
+    @app_commands.command(name="help", description="Show all music bot commands")
+    async def help(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🎵 Music Bot Commands",
+            description="Play music from YouTube, SoundCloud, direct URLs and more.",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="▶️ Playback",
+            value=(
+                "`/play <url or search>` — Play a song or add to queue\n"
+                "`/pause` — Pause the current song\n"
+                "`/resume` — Resume playback\n"
+                "`/stop` — Stop and clear the queue\n"
+                "`/skip` — Skip to the next song\n"
+                "`/volume <1–100>` — Set the volume"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 Queue",
+            value=(
+                "`/queue` — Show the current queue\n"
+                "`/nowplaying` — Show what's playing now\n"
+                "`/shuffle` — Shuffle the queue\n"
+                "`/remove <position>` — Remove a song from the queue\n"
+                "`/move <from> <to>` — Reorder a song in the queue\n"
+                "`/clearqueue` — Clear queue (keeps current song)"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔁 Loop",
+            value=(
+                "`/loop` — Loop the current track\n"
+                "`/loopqueue` — Loop the entire queue"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔊 Voice",
+            value=(
+                "`/join` — Pull bot into your voice channel\n"
+                "`/leave` — Disconnect bot and clear queue"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Tip: /play works with YouTube links, SoundCloud, or just a song name!")
+        await interaction.response.send_message(embed=embed)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Music(bot))
