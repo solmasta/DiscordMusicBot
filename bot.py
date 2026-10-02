@@ -42,7 +42,8 @@ class MusicBot(commands.Bot):
         self._radio_channel: discord.VoiceChannel | None = None
         self._station_index = 0
         self._current_stream_url: str = ""
-        self._blank_title_streak = 0  # consecutive blank ICY title reads
+        self._blank_title_streak = 0
+        self._icy_no_support: set[int] = set()  # station indices with no ICY support
 
     async def setup_hook(self):
         await self.load_extension("cogs.music")
@@ -138,7 +139,23 @@ class MusicBot(commands.Bot):
             data = data["entries"][0]
         return data.get("url") or (data.get("formats") or [{}])[0].get("url", url)
 
-    @tasks.loop(seconds=20)
+    async def _play_next_station(self, vc: discord.VoiceClient):
+        """Immediately stop current stream and start the next station."""
+        if vc.is_playing() or vc.is_paused():
+            vc.stop()
+        try:
+            station_url = RADIO_STATIONS[self._station_index % len(RADIO_STATIONS)]
+            self._station_index += 1
+            stream_url = await self._resolve_stream_url(station_url)
+            self._current_stream_url = stream_url
+            self._blank_title_streak = 0
+            source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_RADIO_OPTIONS)
+            vc.play(source)
+            log.info("Radio: switched to station %d → %s", self._station_index, station_url)
+        except Exception as e:
+            log.error("Radio: failed to switch station: %s", e)
+
+    @tasks.loop(seconds=5)
     async def _radio_keepalive(self):
         """Keep the radio stream alive 24/7."""
         channel = self.get_channel(int(RADIO_CHANNEL_ID))
@@ -161,30 +178,20 @@ class MusicBot(commands.Bot):
         if vc.channel != channel:
             await vc.move_to(channel)
 
-        # Start playing if not already — rotate to next station each time
+        # Start playing if not already
         if not vc.is_playing() and not vc.is_paused():
-            try:
-                station_url = RADIO_STATIONS[self._station_index % len(RADIO_STATIONS)]
-                self._station_index += 1
-                stream_url = await self._resolve_stream_url(station_url)
-                self._current_stream_url = stream_url
-                self._blank_title_streak = 0
-                source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_RADIO_OPTIONS)
-                vc.play(source)
-                log.info("Radio: playing station %d → %s", self._station_index, station_url)
-            except Exception as e:
-                log.error("Radio: failed to start stream: %s", e)
+            await self._play_next_station(vc)
 
     @tasks.loop(minutes=30)
     async def _station_rotator(self):
-        """Switch to the next station every 30 minutes."""
+        """Fallback: rotate station every 30 min for ICY-incompatible stations."""
         channel = self.get_channel(int(RADIO_CHANNEL_ID))
         if not channel:
             return
         vc = channel.guild.voice_client
-        if vc and vc.is_playing():
-            vc.stop()  # keepalive will pick up next station on next tick
-            log.info("Radio: rotating to next station")
+        if vc and vc.is_connected():
+            log.info("Radio: 30-min fallback rotation")
+            await self._play_next_station(vc)
 
     @_station_rotator.before_loop
     async def _before_rotator(self):
@@ -215,7 +222,7 @@ class MusicBot(commands.Bot):
         except Exception:
             return None
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=10)
     async def _icy_monitor(self):
         """Rotate station when ICY StreamTitle is blank (commercial break)."""
         if not self._current_stream_url:
@@ -227,17 +234,24 @@ class MusicBot(commands.Bot):
         if not vc or not vc.is_playing():
             return
 
+        # Skip check if current station is known to not support ICY
+        current_idx = (self._station_index - 1) % len(RADIO_STATIONS)
+        if current_idx in self._icy_no_support:
+            return
+
         title = await self._fetch_icy_title(self._current_stream_url)
         if title is None:
-            return  # stream doesn't support ICY — let time-based rotator handle it
+            # Mark this station as ICY-incompatible so we stop polling it
+            self._icy_no_support.add(current_idx)
+            log.info("ICY: station %d has no ICY support — using time-based rotation", current_idx)
+            return
 
         if title == "":
             self._blank_title_streak += 1
             log.info("ICY: blank title streak=%d", self._blank_title_streak)
-            if self._blank_title_streak >= 2:  # 2 × 30s = 1 min of silence/blank
-                log.info("ICY: commercial detected — rotating station")
-                self._blank_title_streak = 0
-                vc.stop()  # keepalive picks up next station within 20s
+            if self._blank_title_streak >= 2:  # 2 × 10s = 20s blank = commercial
+                log.info("ICY: commercial detected — rotating station immediately")
+                await self._play_next_station(vc)
         else:
             self._blank_title_streak = 0
             log.info("ICY: now playing — %s", title)
