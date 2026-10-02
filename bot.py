@@ -24,6 +24,7 @@ RADIO_STATIONS = [
     os.getenv("RADIO_URL", "https://tunein.com/radio/s30358/"),
     "https://tunein.com/radio/s21577/",
     "https://tunein.com/radio/s306671/",
+    "https://tunein.com/radio/s24061/",
 ]
 RADIO_URL = RADIO_STATIONS[0]  # kept for backward-compat checks
 
