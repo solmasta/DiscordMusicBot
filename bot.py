@@ -46,7 +46,7 @@ class MusicBot(commands.Bot):
 
     async def on_ready(self):
         log.info("Logged in as %s (ID: %s)", self.user, self.user.id)
-        status = RADIO_URL if RADIO_URL else "/play to add music"
+        status = "24/7 Throwback Vibes 📻" if RADIO_URL else "/play to add music"
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.listening,

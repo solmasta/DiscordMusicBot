@@ -433,7 +433,7 @@ class Music(commands.Cog):
     @app_commands.command(name="help", description="Show all music bot commands")
     async def help(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="🎵 Music Bot Commands",
+            title="📻 VibeStation Commands",
             description="Play music from YouTube, SoundCloud, direct URLs and more.",
             color=discord.Color.blurple(),
         )
@@ -477,7 +477,7 @@ class Music(commands.Cog):
             ),
             inline=False,
         )
-        embed.set_footer(text="Tip: /play works with YouTube links, SoundCloud, or just a song name!")
+        embed.set_footer(text="VibeStation 📻 — /play works with YouTube, SoundCloud, or just a song name!")
         await interaction.response.send_message(embed=embed)
 
 
