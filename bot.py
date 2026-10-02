@@ -76,13 +76,28 @@ class MusicBot(commands.Bot):
                             log.info("Auto-disconnected from empty channel in %s", before.channel.guild.name)
 
     async def _resolve_stream_url(self, url: str) -> str:
-        """Use yt-dlp to resolve a URL to a direct audio stream."""
-        opts = {
-            "format": "bestaudio/best",
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-        }
+        """Resolve a URL to a direct audio stream.
+        Handles TuneIn station IDs via the OPML API, falls back to yt-dlp."""
+        import re
+        import aiohttp
+
+        # TuneIn station: extract ID and use OPML API
+        tunein_match = re.search(r"tunein\.com.*?/(s\d+)", url)
+        if tunein_match:
+            station_id = tunein_match.group(1)
+            opml_url = f"https://opml.radiotime.com/Tune.ashx?id={station_id}&render=json"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(opml_url) as resp:
+                    data = await resp.json(content_type=None)
+            # body contains list of stream options; pick first playable one
+            for item in data.get("body", []):
+                stream = item.get("url", "")
+                if stream and not stream.startswith("http://opml"):
+                    log.info("Radio: resolved TuneIn %s → %s", station_id, stream)
+                    return stream
+
+        # Fallback: use yt-dlp
+        opts = {"format": "bestaudio/best", "quiet": True, "no_warnings": True, "noplaylist": True}
         loop = asyncio.get_event_loop()
         with yt_dlp.YoutubeDL(opts) as ydl:
             data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
