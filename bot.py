@@ -41,6 +41,8 @@ class MusicBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self._radio_channel: discord.VoiceChannel | None = None
         self._station_index = 0
+        self._current_stream_url: str = ""
+        self._blank_title_streak = 0  # consecutive blank ICY title reads
 
     async def setup_hook(self):
         await self.load_extension("cogs.music")
@@ -65,6 +67,7 @@ class MusicBot(commands.Bot):
         if RADIO_URL and RADIO_CHANNEL_ID:
             self._radio_keepalive.start()
             self._station_rotator.start()
+            self._icy_monitor.start()
 
     async def on_voice_state_update(self, member, before, after):
         # Don't auto-disconnect when 24/7 radio mode is active
@@ -164,6 +167,8 @@ class MusicBot(commands.Bot):
                 station_url = RADIO_STATIONS[self._station_index % len(RADIO_STATIONS)]
                 self._station_index += 1
                 stream_url = await self._resolve_stream_url(station_url)
+                self._current_stream_url = stream_url
+                self._blank_title_streak = 0
                 source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_RADIO_OPTIONS)
                 vc.play(source)
                 log.info("Radio: playing station %d → %s", self._station_index, station_url)
@@ -184,7 +189,63 @@ class MusicBot(commands.Bot):
     @_station_rotator.before_loop
     async def _before_rotator(self):
         await self.wait_until_ready()
-        await asyncio.sleep(30 * 60)  # first rotation after 30 min, not immediately
+        await asyncio.sleep(30 * 60)  # fallback: first rotation after 30 min
+
+    async def _fetch_icy_title(self, stream_url: str) -> str | None:
+        """Return the current StreamTitle from an ICY stream, or None if unsupported."""
+        import re
+        import aiohttp
+        headers = {"Icy-MetaData": "1", "User-Agent": "Mozilla/5.0"}
+        try:
+            timeout = aiohttp.ClientTimeout(total=12)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(stream_url, headers=headers, timeout=timeout) as resp:
+                    metaint = int(resp.headers.get("icy-metaint", 0))
+                    if not metaint:
+                        return None  # stream doesn't support ICY metadata
+                    await resp.content.readexactly(metaint)
+                    length_byte = await resp.content.readexactly(1)
+                    meta_length = length_byte[0] * 16
+                    if meta_length == 0:
+                        return ""
+                    meta_bytes = await resp.content.readexactly(meta_length)
+                    meta_str = meta_bytes.decode("utf-8", errors="ignore").rstrip("\x00")
+                    match = re.search(r"StreamTitle='([^']*)'", meta_str)
+                    return match.group(1).strip() if match else ""
+        except Exception:
+            return None
+
+    @tasks.loop(seconds=30)
+    async def _icy_monitor(self):
+        """Rotate station when ICY StreamTitle is blank (commercial break)."""
+        if not self._current_stream_url:
+            return
+        channel = self.get_channel(int(RADIO_CHANNEL_ID))
+        if not channel:
+            return
+        vc = channel.guild.voice_client
+        if not vc or not vc.is_playing():
+            return
+
+        title = await self._fetch_icy_title(self._current_stream_url)
+        if title is None:
+            return  # stream doesn't support ICY — let time-based rotator handle it
+
+        if title == "":
+            self._blank_title_streak += 1
+            log.info("ICY: blank title streak=%d", self._blank_title_streak)
+            if self._blank_title_streak >= 2:  # 2 × 30s = 1 min of silence/blank
+                log.info("ICY: commercial detected — rotating station")
+                self._blank_title_streak = 0
+                vc.stop()  # keepalive picks up next station within 20s
+        else:
+            self._blank_title_streak = 0
+            log.info("ICY: now playing — %s", title)
+
+    @_icy_monitor.before_loop
+    async def _before_icy_monitor(self):
+        await self.wait_until_ready()
+        await asyncio.sleep(60)  # give the stream 60s to settle before monitoring
 
     @_radio_keepalive.before_loop
     async def _before_keepalive(self):
