@@ -23,6 +23,7 @@ RADIO_CHANNEL_ID = os.getenv("RADIO_CHANNEL_ID") # voice channel ID to auto-join
 RADIO_STATIONS = [
     os.getenv("RADIO_URL", "https://tunein.com/radio/s30358/"),
     "https://tunein.com/radio/s21577/",
+    "https://tunein.com/radio/s23254/",
 ]
 RADIO_URL = RADIO_STATIONS[0]  # kept for backward-compat checks
 
