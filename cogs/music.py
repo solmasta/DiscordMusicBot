@@ -71,7 +71,8 @@ async def extract_info(url: str) -> dict:
 
 
 def build_track(data: dict, requester: discord.Member, original_url: str) -> Track:
-    stream_url = data.get("url") or data.get("formats", [{}])[0].get("url", "")
+    formats = data.get("formats") or [{}]
+    stream_url = data.get("url") or formats[0].get("url", "")
     return Track(
         url=original_url,
         stream_url=stream_url,
