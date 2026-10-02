@@ -17,8 +17,14 @@ log = logging.getLogger("bot")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
-RADIO_URL = os.getenv("RADIO_URL")               # stream URL to auto-play 24/7
 RADIO_CHANNEL_ID = os.getenv("RADIO_CHANNEL_ID") # voice channel ID to auto-join
+
+# Stations to rotate through — add more TuneIn embed URLs here
+RADIO_STATIONS = [
+    os.getenv("RADIO_URL", "https://tunein.com/radio/s30358/"),
+    "https://tunein.com/radio/s21577/",
+]
+RADIO_URL = RADIO_STATIONS[0]  # kept for backward-compat checks
 
 FFMPEG_RADIO_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -32,6 +38,7 @@ class MusicBot(commands.Bot):
         intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents)
         self._radio_channel: discord.VoiceChannel | None = None
+        self._station_index = 0
 
     async def setup_hook(self):
         await self.load_extension("cogs.music")
@@ -148,13 +155,15 @@ class MusicBot(commands.Bot):
         if vc.channel != channel:
             await vc.move_to(channel)
 
-        # Start playing if not already
+        # Start playing if not already — rotate to next station each time
         if not vc.is_playing() and not vc.is_paused():
             try:
-                stream_url = await self._resolve_stream_url(RADIO_URL)
+                station_url = RADIO_STATIONS[self._station_index % len(RADIO_STATIONS)]
+                self._station_index += 1
+                stream_url = await self._resolve_stream_url(station_url)
                 source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_RADIO_OPTIONS)
                 vc.play(source)
-                log.info("Radio: started stream from %s", stream_url)
+                log.info("Radio: playing station %d → %s", self._station_index, station_url)
             except Exception as e:
                 log.error("Radio: failed to start stream: %s", e)
 
