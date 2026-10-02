@@ -433,8 +433,8 @@ class Music(commands.Cog):
     @app_commands.command(name="help", description="Show all music bot commands")
     async def help(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="📻 VibeStation Commands",
-            description="Play music from YouTube, SoundCloud, direct URLs and more.",
+            title="📻 Crue FM — Commands",
+            description="Motley Crue Inc's 24/7 radio bot. Play music from YouTube, SoundCloud, direct URLs and more.",
             color=discord.Color.blurple(),
         )
         embed.add_field(
@@ -477,7 +477,7 @@ class Music(commands.Cog):
             ),
             inline=False,
         )
-        embed.set_footer(text="VibeStation 📻 — /play works with YouTube, SoundCloud, or just a song name!")
+        embed.set_footer(text="Crue FM 📻 — Motley Crue Inc's station. /play works with YouTube, SoundCloud, or just a song name!")
         await interaction.response.send_message(embed=embed)
 
 
