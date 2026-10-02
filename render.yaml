@@ -1,0 +1,8 @@
+services:
+  - type: worker
+    name: discord-music-bot
+    runtime: docker
+    branch: main
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false   # Render will prompt you to enter this value in the dashboard
