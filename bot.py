@@ -77,9 +77,24 @@ class MusicBot(commands.Bot):
 
     async def _resolve_stream_url(self, url: str) -> str:
         """Resolve a URL to a direct audio stream.
-        Handles TuneIn station IDs via the OPML API, falls back to yt-dlp."""
+        Handles TuneIn station IDs via the OPML API, PLS/M3U playlists, falls back to yt-dlp."""
         import re
         import aiohttp
+
+        async def resolve_playlist(playlist_url: str, session: aiohttp.ClientSession) -> str:
+            """Follow PLS or M3U playlist to the first direct stream URL."""
+            async with session.get(playlist_url, allow_redirects=True) as resp:
+                text = await resp.text()
+            # PLS format: File1=http://...
+            pls_match = re.search(r"^File\d+=(.+)$", text, re.MULTILINE | re.IGNORECASE)
+            if pls_match:
+                return pls_match.group(1).strip()
+            # M3U format: first non-comment line starting with http
+            for line in text.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and line.startswith("http"):
+                    return line
+            return playlist_url
 
         # TuneIn station: extract ID and use OPML API
         tunein_match = re.search(r"tunein\.com.*?/(s\d+)", url)
@@ -89,12 +104,17 @@ class MusicBot(commands.Bot):
             async with aiohttp.ClientSession() as session:
                 async with session.get(opml_url) as resp:
                     data = await resp.json(content_type=None)
-            # body contains list of stream options; pick first playable one
-            for item in data.get("body", []):
-                stream = item.get("url", "")
-                if stream and not stream.startswith("http://opml"):
-                    log.info("Radio: resolved TuneIn %s → %s", station_id, stream)
-                    return stream
+                # body contains list of stream options; pick first playable one
+                for item in data.get("body", []):
+                    stream = item.get("url", "")
+                    if stream and not stream.startswith("http://opml"):
+                        # If it's a playlist file, resolve it further
+                        if any(stream.lower().endswith(ext) or f".{ext}?" in stream.lower()
+                               for ext in ("pls", "m3u", "m3u8")):
+                            log.info("Radio: resolving playlist %s", stream)
+                            stream = await resolve_playlist(stream, session)
+                        log.info("Radio: resolved TuneIn %s → %s", station_id, stream)
+                        return stream
 
         # Fallback: use yt-dlp
         opts = {"format": "bestaudio/best", "quiet": True, "no_warnings": True, "noplaylist": True}
