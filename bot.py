@@ -23,7 +23,6 @@ RADIO_CHANNEL_ID = os.getenv("RADIO_CHANNEL_ID") # voice channel ID to auto-join
 RADIO_STATIONS = [
     os.getenv("RADIO_URL", "https://tunein.com/radio/s30358/"),
     "https://tunein.com/radio/s21577/",
-    "https://tunein.com/radio/s306671/",
 ]
 RADIO_URL = RADIO_STATIONS[0]  # kept for backward-compat checks
 
@@ -42,7 +41,8 @@ class MusicBot(commands.Bot):
         self._station_index = 0
         self._current_stream_url: str = ""
         self._blank_title_streak = 0
-        self._icy_no_support: set[int] = set()  # station indices with no ICY support
+        self._icy_no_support: set[int] = set()
+        self._stream_cache: dict[int, str] = {}  # pre-resolved stream URLs per station index
 
     async def setup_hook(self):
         await self.load_extension("cogs.music")
@@ -65,6 +65,7 @@ class MusicBot(commands.Bot):
             )
         )
         if RADIO_URL and RADIO_CHANNEL_ID:
+            asyncio.create_task(self._prefetch_all_stations())
             self._radio_keepalive.start()
             self._station_rotator.start()
             self._icy_monitor.start()
@@ -138,21 +139,56 @@ class MusicBot(commands.Bot):
             data = data["entries"][0]
         return data.get("url") or (data.get("formats") or [{}])[0].get("url", url)
 
+    async def _prefetch_all_stations(self):
+        """Resolve and cache stream URLs for all stations in the background."""
+        for i, station_url in enumerate(RADIO_STATIONS):
+            if i not in self._stream_cache:
+                try:
+                    url = await self._resolve_stream_url(station_url)
+                    self._stream_cache[i] = url
+                    log.info("Prefetch: station %d cached → %s", i, station_url)
+                except Exception as e:
+                    log.warning("Prefetch: station %d failed: %s", i, e)
+
     async def _play_next_station(self, vc: discord.VoiceClient):
-        """Immediately stop current stream and start the next station."""
+        """Stop current stream and start the next station using pre-cached URL."""
+        idx = self._station_index % len(RADIO_STATIONS)
+        self._station_index += 1
+
+        # Use cached URL for instant switch, fall back to live resolve if missing
+        stream_url = self._stream_cache.get(idx)
+        if not stream_url:
+            try:
+                stream_url = await self._resolve_stream_url(RADIO_STATIONS[idx])
+            except Exception as e:
+                log.error("Radio: failed to resolve station %d: %s", idx, e)
+                return
+
         if vc.is_playing() or vc.is_paused():
             vc.stop()
+
         try:
-            station_url = RADIO_STATIONS[self._station_index % len(RADIO_STATIONS)]
-            self._station_index += 1
-            stream_url = await self._resolve_stream_url(station_url)
             self._current_stream_url = stream_url
             self._blank_title_streak = 0
             source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_RADIO_OPTIONS)
             vc.play(source)
-            log.info("Radio: switched to station %d → %s", self._station_index, station_url)
+            log.info("Radio: switched to station %d (cached=%s)", idx, idx in self._stream_cache)
         except Exception as e:
-            log.error("Radio: failed to switch station: %s", e)
+            log.error("Radio: failed to play station %d: %s", idx, e)
+            return
+
+        # Refresh this station's cache in the background for next rotation
+        asyncio.create_task(self._refresh_cache(idx))
+
+    async def _refresh_cache(self, idx: int):
+        """Re-resolve and update cache for one station after it's been played."""
+        try:
+            url = await self._resolve_stream_url(RADIO_STATIONS[idx])
+            self._stream_cache[idx] = url
+            log.info("Cache refreshed: station %d", idx)
+        except Exception as e:
+            self._stream_cache.pop(idx, None)
+            log.warning("Cache refresh failed for station %d: %s", idx, e)
 
     @tasks.loop(seconds=5)
     async def _radio_keepalive(self):
