@@ -62,6 +62,7 @@ class MusicBot(commands.Bot):
         )
         if RADIO_URL and RADIO_CHANNEL_ID:
             self._radio_keepalive.start()
+            self._station_rotator.start()
 
     async def on_voice_state_update(self, member, before, after):
         # Don't auto-disconnect when 24/7 radio mode is active
@@ -166,6 +167,22 @@ class MusicBot(commands.Bot):
                 log.info("Radio: playing station %d → %s", self._station_index, station_url)
             except Exception as e:
                 log.error("Radio: failed to start stream: %s", e)
+
+    @tasks.loop(minutes=30)
+    async def _station_rotator(self):
+        """Switch to the next station every 30 minutes."""
+        channel = self.get_channel(int(RADIO_CHANNEL_ID))
+        if not channel:
+            return
+        vc = channel.guild.voice_client
+        if vc and vc.is_playing():
+            vc.stop()  # keepalive will pick up next station on next tick
+            log.info("Radio: rotating to next station")
+
+    @_station_rotator.before_loop
+    async def _before_rotator(self):
+        await self.wait_until_ready()
+        await asyncio.sleep(30 * 60)  # first rotation after 30 min, not immediately
 
     @_radio_keepalive.before_loop
     async def _before_keepalive(self):
