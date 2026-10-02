@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import discord
+import yt_dlp
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
@@ -74,6 +75,21 @@ class MusicBot(commands.Bot):
                             await vc.disconnect()
                             log.info("Auto-disconnected from empty channel in %s", before.channel.guild.name)
 
+    async def _resolve_stream_url(self, url: str) -> str:
+        """Use yt-dlp to resolve a URL to a direct audio stream."""
+        opts = {
+            "format": "bestaudio/best",
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+        }
+        loop = asyncio.get_event_loop()
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+        if "entries" in data:
+            data = data["entries"][0]
+        return data.get("url") or (data.get("formats") or [{}])[0].get("url", url)
+
     @tasks.loop(seconds=20)
     async def _radio_keepalive(self):
         """Keep the radio stream alive 24/7."""
@@ -100,9 +116,10 @@ class MusicBot(commands.Bot):
         # Start playing if not already
         if not vc.is_playing() and not vc.is_paused():
             try:
-                source = discord.FFmpegPCMAudio(RADIO_URL, **FFMPEG_RADIO_OPTIONS)
+                stream_url = await self._resolve_stream_url(RADIO_URL)
+                source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_RADIO_OPTIONS)
                 vc.play(source)
-                log.info("Radio: started stream from %s", RADIO_URL)
+                log.info("Radio: started stream from %s", stream_url)
             except Exception as e:
                 log.error("Radio: failed to start stream: %s", e)
 
