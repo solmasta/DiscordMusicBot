@@ -4,12 +4,22 @@ primary_region = "ord"
 [build]
 
 [env]
-# DISCORD_TOKEN must be set as a secret:
+GUILD_ID = "985413944514600968"
+RADIO_URL = "https://tunein.com/radio/s30358/"
+RADIO_CHANNEL_ID = "985413944514600970"
+PORT = "8080"
+
+# Secrets (set once via CLI, never committed):
 #   fly secrets set DISCORD_TOKEN=your_token_here
 
-# No HTTP service — this is a background worker, not a web app.
-# Fly keeps it running persistently on the free shared-cpu-1x plan.
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
 
 [[vm]]
-size = "shared-cpu-1x"
-memory = "256mb"
+  size = "shared-cpu-1x"
+  memory = "256mb"
