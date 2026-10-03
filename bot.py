@@ -311,12 +311,29 @@ class MusicBot(commands.Bot):
         log.error("App command error in %s: %s", interaction.command, error, exc_info=error)
 
 
+async def health_server():
+    """Minimal HTTP server so Render's free web service tier stays alive."""
+    from aiohttp import web
+    app = web.Application()
+    app.router.add_get("/", lambda r: web.Response(text="OK"))
+    app.router.add_get("/health", lambda r: web.Response(text="OK"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    log.info("Health server listening on port %d", port)
+
+
 async def main():
     if not TOKEN:
         raise ValueError("DISCORD_TOKEN is not set. Copy .env.example to .env and add your token.")
     bot = MusicBot()
     async with bot:
-        await bot.start(TOKEN)
+        await asyncio.gather(
+            bot.start(TOKEN),
+            health_server(),
+        )
 
 
 if __name__ == "__main__":
