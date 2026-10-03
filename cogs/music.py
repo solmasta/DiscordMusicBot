@@ -60,7 +60,7 @@ class GuildState:
 
 async def extract_info(url: str) -> dict:
     """Run yt-dlp in a thread pool to avoid blocking the event loop."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     opts = dict(YTDL_OPTIONS)
     with yt_dlp.YoutubeDL(opts) as ydl:
         data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
@@ -71,7 +71,8 @@ async def extract_info(url: str) -> dict:
 
 
 def build_track(data: dict, requester: discord.Member, original_url: str) -> Track:
-    stream_url = data.get("url") or data.get("formats", [{}])[0].get("url", "")
+    formats = data.get("formats") or [{}]
+    stream_url = data.get("url") or formats[0].get("url", "")
     return Track(
         url=original_url,
         stream_url=stream_url,
@@ -428,6 +429,56 @@ class Music(commands.Cog):
         state = self._get_state(interaction.guild_id)
         state.queue.clear()
         await interaction.response.send_message("Queue cleared.")
+
+    @app_commands.command(name="help", description="Show all music bot commands")
+    async def help(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="📻 Crue FM — Commands",
+            description="Motley Crue Inc's 24/7 radio bot. Play music from YouTube, SoundCloud, direct URLs and more.",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="▶️ Playback",
+            value=(
+                "`/play <url or search>` — Play a song or add to queue\n"
+                "`/pause` — Pause the current song\n"
+                "`/resume` — Resume playback\n"
+                "`/stop` — Stop and clear the queue\n"
+                "`/skip` — Skip to the next song\n"
+                "`/volume <1–100>` — Set the volume"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 Queue",
+            value=(
+                "`/queue` — Show the current queue\n"
+                "`/nowplaying` — Show what's playing now\n"
+                "`/shuffle` — Shuffle the queue\n"
+                "`/remove <position>` — Remove a song from the queue\n"
+                "`/move <from> <to>` — Reorder a song in the queue\n"
+                "`/clearqueue` — Clear queue (keeps current song)"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔁 Loop",
+            value=(
+                "`/loop` — Loop the current track\n"
+                "`/loopqueue` — Loop the entire queue"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔊 Voice",
+            value=(
+                "`/join` — Pull bot into your voice channel\n"
+                "`/leave` — Disconnect bot and clear queue"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Crue FM 📻 — Motley Crue Inc's station. /play works with YouTube, SoundCloud, or just a song name!")
+        await interaction.response.send_message(embed=embed)
 
 
 async def setup(bot: commands.Bot):
