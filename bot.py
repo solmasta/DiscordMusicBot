@@ -131,7 +131,7 @@ class MusicBot(commands.Bot):
 
         # Fallback: use yt-dlp
         opts = {"format": "bestaudio/best", "quiet": True, "no_warnings": True, "noplaylist": True}
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         with yt_dlp.YoutubeDL(opts) as ydl:
             data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
         if "entries" in data:
@@ -298,6 +298,17 @@ class MusicBot(commands.Bot):
     @_radio_keepalive.before_loop
     async def _before_keepalive(self):
         await self.wait_until_ready()
+
+    async def on_app_command_error(self, interaction: discord.Interaction, error: Exception):
+        msg = f"Something went wrong: `{error}`"
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            pass
+        log.error("App command error in %s: %s", interaction.command, error, exc_info=error)
 
 
 async def main():

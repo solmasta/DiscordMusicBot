@@ -60,7 +60,7 @@ class GuildState:
 
 async def extract_info(url: str) -> dict:
     """Run yt-dlp in a thread pool to avoid blocking the event loop."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     opts = dict(YTDL_OPTIONS)
     with yt_dlp.YoutubeDL(opts) as ydl:
         data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
