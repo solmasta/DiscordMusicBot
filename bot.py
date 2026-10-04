@@ -80,6 +80,21 @@ class MusicBot(commands.Bot):
                 f"Added station **#{len(RADIO_STATIONS)}**: `{url}`\nTotal in rotation: {len(RADIO_STATIONS)}"
             )
 
+        @self.tree.command(name="stations", description="List all radio stations in the rotation")
+        async def stations(interaction: discord.Interaction):
+            current_idx = (bot_ref._station_index - 1) % len(RADIO_STATIONS)
+            lines = []
+            for i, url in enumerate(RADIO_STATIONS):
+                marker = "▶️" if i == current_idx else f"`{i + 1}.`"
+                lines.append(f"{marker} {url}")
+            embed = discord.Embed(
+                title="📻 Radio Station Rotation",
+                description="\n".join(lines),
+                color=discord.Color.blurple(),
+            )
+            embed.set_footer(text=f"{len(RADIO_STATIONS)} stations · ▶️ = now playing")
+            await interaction.response.send_message(embed=embed)
+
         guild = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
         if guild:
             self.tree.copy_global_to(guild=guild)
