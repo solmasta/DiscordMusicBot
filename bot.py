@@ -212,7 +212,10 @@ class MusicBot(commands.Bot):
         with yt_dlp.YoutubeDL(opts) as ydl:
             data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
         if "entries" in data:
-            data = data["entries"][0]
+            entries = [e for e in (data.get("entries") or []) if e]
+            if not entries:
+                raise ValueError("No stream found for this URL")
+            data = entries[0]
         return data.get("url") or (data.get("formats") or [{}])[0].get("url", url)
 
     async def _prefetch_all_stations(self):

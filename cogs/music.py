@@ -66,7 +66,10 @@ async def extract_info(url: str) -> dict:
         data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
     # If a playlist was returned, grab first entry
     if "entries" in data:
-        data = data["entries"][0]
+        entries = [e for e in (data["entries"] or []) if e]
+        if not entries:
+            raise yt_dlp.utils.DownloadError("No playable results found.")
+        data = entries[0]
     return data
 
 
@@ -214,6 +217,21 @@ class Music(commands.Cog):
     @app_commands.describe(query="YouTube/SoundCloud URL, direct audio URL, or search query")
     async def play(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer()
+
+        # Strip iframe embed HTML (e.g. pasted from TuneIn's embed widget)
+        iframe_src = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', query, re.IGNORECASE)
+        if iframe_src:
+            query = iframe_src.group(1)
+
+        # TuneIn embed/station URLs don't work with yt-dlp — redirect to radio commands
+        if re.search(r"tunein\.com/(embed|radio)/", query, re.IGNORECASE):
+            await interaction.followup.send(
+                "TuneIn URLs can't be played with `/play`. "
+                "Use `/listen` to browse the radio rotation or `/stations` to see what's on!",
+                ephemeral=True,
+            )
+            return
+
         state = self._get_state(interaction.guild_id)
         state.text_channel = interaction.channel
 
