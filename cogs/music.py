@@ -480,6 +480,7 @@ class Music(commands.Cog):
         embed.add_field(
             name="📻 Radio",
             value=(
+                "`/listen` — Get clickable links to listen in browser (no voice needed)\n"
                 "`/stations` — List all stations in the rotation\n"
                 "`/nextstation` — Skip to the next radio station\n"
                 "`/addstation <url>` — Add a TuneIn or stream URL to the rotation"
