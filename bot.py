@@ -21,11 +21,11 @@ RADIO_CHANNEL_ID = os.getenv("RADIO_CHANNEL_ID") # voice channel ID to auto-join
 
 # Stations to rotate through — add more TuneIn embed URLs here
 RADIO_STATIONS = [
-    os.getenv("RADIO_URL", "https://tunein.com/radio/s30358/"),  # Crue FM
-    "https://tunein.com/radio/s23558/",   # WDRV 97.1 The Drive (Classic Rock, Chicago)
-    "https://tunein.com/radio/s23617/",   # WLUP 97.9 The Loop (Rock, Chicago)
-    "https://tunein.com/radio/s23682/",   # WXRT 93.1 (Alt/Rock, Chicago)
-    "https://tunein.com/radio/s97268/",   # Radio Metal
+    os.getenv("RADIO_URL", "https://tunein.com/radio/s30358/"),  # Crue FM / WKQX Q101 Alt Rock Chicago
+    "https://ice2.somafm.com/metal-128-mp3",                     # SomaFM Metal
+    "https://stream.radioparadise.com/rock-128",                  # Radio Paradise Rock
+    "http://listen.181fm.com/181-rock_128k.mp3",                  # 181.FM Rock
+    "https://ice2.somafm.com/beatblender-128-mp3",                # SomaFM Classic Rock
 ]
 RADIO_URL = RADIO_STATIONS[0]  # kept for backward-compat checks
 
