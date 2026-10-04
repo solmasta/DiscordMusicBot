@@ -21,7 +21,11 @@ RADIO_CHANNEL_ID = os.getenv("RADIO_CHANNEL_ID") # voice channel ID to auto-join
 
 # Stations to rotate through — add more TuneIn embed URLs here
 RADIO_STATIONS = [
-    os.getenv("RADIO_URL", "https://tunein.com/radio/s30358/"),
+    os.getenv("RADIO_URL", "https://tunein.com/radio/s30358/"),  # Crue FM
+    "https://tunein.com/radio/s23558/",   # WDRV 97.1 The Drive (Classic Rock, Chicago)
+    "https://tunein.com/radio/s23617/",   # WLUP 97.9 The Loop (Rock, Chicago)
+    "https://tunein.com/radio/s23682/",   # WXRT 93.1 (Alt/Rock, Chicago)
+    "https://tunein.com/radio/s97268/",   # Radio Metal
 ]
 RADIO_URL = RADIO_STATIONS[0]  # kept for backward-compat checks
 
@@ -45,6 +49,37 @@ class MusicBot(commands.Bot):
 
     async def setup_hook(self):
         await self.load_extension("cogs.music")
+
+        bot_ref = self
+
+        @self.tree.command(name="nextstation", description="Skip to the next radio station immediately")
+        async def nextstation(interaction: discord.Interaction):
+            if not RADIO_CHANNEL_ID:
+                await interaction.response.send_message("Radio mode is not active.", ephemeral=True)
+                return
+            channel = bot_ref.get_channel(int(RADIO_CHANNEL_ID))
+            if not channel:
+                await interaction.response.send_message("Radio channel not found.", ephemeral=True)
+                return
+            vc = channel.guild.voice_client
+            if not vc or not vc.is_connected():
+                await interaction.response.send_message("Bot is not in a voice channel.", ephemeral=True)
+                return
+            await bot_ref._play_next_station(vc)
+            idx = (bot_ref._station_index - 1) % len(RADIO_STATIONS)
+            await interaction.response.send_message(
+                f"Skipped! Now on station **{idx + 1}/{len(RADIO_STATIONS)}**"
+            )
+
+        @self.tree.command(name="addstation", description="Add a radio station to the rotation")
+        @discord.app_commands.describe(url="TuneIn station URL or direct stream URL")
+        async def addstation(interaction: discord.Interaction, url: str):
+            RADIO_STATIONS.append(url)
+            asyncio.create_task(bot_ref._prefetch_all_stations())
+            await interaction.response.send_message(
+                f"Added station **#{len(RADIO_STATIONS)}**: `{url}`\nTotal in rotation: {len(RADIO_STATIONS)}"
+            )
+
         guild = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
         if guild:
             self.tree.copy_global_to(guild=guild)

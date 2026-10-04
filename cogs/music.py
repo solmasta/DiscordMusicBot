@@ -477,6 +477,14 @@ class Music(commands.Cog):
             ),
             inline=False,
         )
+        embed.add_field(
+            name="📻 Radio",
+            value=(
+                "`/nextstation` — Skip to the next radio station\n"
+                "`/addstation <url>` — Add a TuneIn or stream URL to the rotation"
+            ),
+            inline=False,
+        )
         embed.set_footer(text="Crue FM 📻 — Motley Crue Inc's station. /play works with YouTube, SoundCloud, or just a song name!")
         await interaction.response.send_message(embed=embed)
 
