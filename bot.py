@@ -27,6 +27,13 @@ RADIO_STATIONS = [
     "http://listen.181fm.com/181-rock_128k.mp3",                  # 181.FM Rock
     "https://ice2.somafm.com/beatblender-128-mp3",                # SomaFM Classic Rock
 ]
+STATION_NAMES = [
+    "Crue FM / WKQX Q101 — Alt Rock Chicago",
+    "SomaFM Metal",
+    "Radio Paradise Rock",
+    "181.FM Rock",
+    "SomaFM Classic Rock",
+]
 RADIO_URL = RADIO_STATIONS[0]  # kept for backward-compat checks
 
 FFMPEG_RADIO_OPTIONS = {
@@ -85,14 +92,34 @@ class MusicBot(commands.Bot):
             current_idx = (bot_ref._station_index - 1) % len(RADIO_STATIONS)
             lines = []
             for i, url in enumerate(RADIO_STATIONS):
+                name = STATION_NAMES[i] if i < len(STATION_NAMES) else url
                 marker = "▶️" if i == current_idx else f"`{i + 1}.`"
-                lines.append(f"{marker} {url}")
+                lines.append(f"{marker} **{name}**")
             embed = discord.Embed(
                 title="📻 Radio Station Rotation",
                 description="\n".join(lines),
                 color=discord.Color.blurple(),
             )
             embed.set_footer(text=f"{len(RADIO_STATIONS)} stations · ▶️ = now playing")
+            await interaction.response.send_message(embed=embed)
+
+        @self.tree.command(name="listen", description="Get links to listen to stations in your browser — no voice channel needed")
+        async def listen(interaction: discord.Interaction):
+            current_idx = (bot_ref._station_index - 1) % len(RADIO_STATIONS)
+            embed = discord.Embed(
+                title="📻 Listen Online",
+                description="Click a station to open it in your browser or music app — no voice channel needed!",
+                color=discord.Color.red(),
+            )
+            for i, url in enumerate(RADIO_STATIONS):
+                name = STATION_NAMES[i] if i < len(STATION_NAMES) else f"Station {i + 1}"
+                playing = " ▶️ Now Playing" if i == current_idx else ""
+                embed.add_field(
+                    name=f"{name}{playing}",
+                    value=f"[▶ Open Stream]({url})",
+                    inline=False,
+                )
+            embed.set_footer(text="Opens in browser or your default media player")
             await interaction.response.send_message(embed=embed)
 
         guild = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
