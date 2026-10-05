@@ -402,24 +402,8 @@ class MusicBot(commands.Bot):
         log.error("App command error in %s: %s", interaction.command, error, exc_info=error)
 
 
-async def health_server():
-    from aiohttp import web
-    app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="OK"))
-    app.router.add_get("/health", lambda r: web.Response(text="OK"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    log.info("Health server on port %d", port)
-
-
 async def main():
-    # Start health server first as an independent task so it survives bot crashes.
-    # This keeps the Fly.io machine alive and logs readable even if the bot fails.
-    asyncio.get_running_loop().create_task(health_server())
-    await asyncio.sleep(1)  # Let aiohttp bind before continuing
+    log.info("Starting bot (GUILD_ID=%r)", GUILD_ID)
 
     if not TOKEN:
         log.error(

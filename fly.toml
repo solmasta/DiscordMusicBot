@@ -11,23 +11,13 @@ RADIO_CHANNEL_ID = "985413944514600970"
 # Secrets (set once via CLI, never committed):
 #   fly secrets set DISCORD_TOKEN=your_token_here
 
-[http_service]
-  internal_port = 8080
-  force_https = false
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
-
-  [[http_service.checks]]
-    grace_period = "30s"
-    interval = "60s"
-    timeout = "5s"
-    path = "/health"
-    method = "GET"
+# Discord bots are workers — no inbound HTTP needed.
+# Removing [http_service] prevents Fly.io from auto-stopping the machine
+# when there is no HTTP traffic (the bot stays connected via WebSocket).
 
 [[restart]]
   policy = "always"
-  max_retries = 5
+  max_retries = 10
 
 [[vm]]
   size = "shared-cpu-1x"
