@@ -123,13 +123,24 @@ class MusicBot(commands.Bot):
             await interaction.response.send_message(embed=embed)
 
         guild = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
-        if guild:
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            log.info("Slash commands synced to guild %s", GUILD_ID)
-        else:
-            await self.tree.sync()
-            log.info("Slash commands synced globally (may take up to 1 hour)")
+        try:
+            if guild:
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                log.info("Slash commands synced to guild %s", GUILD_ID)
+            else:
+                await self.tree.sync()
+                log.info("Slash commands synced globally (may take up to 1 hour)")
+        except discord.Forbidden:
+            log.warning(
+                "Could not sync slash commands (Missing Access). "
+                "Re-invite the bot with the applications.commands scope: "
+                "https://discord.com/api/oauth2/authorize"
+                "?client_id=%s&permissions=3148800&scope=bot+applications.commands",
+                self.application_id,
+            )
+        except Exception as e:
+            log.warning("Slash command sync failed (non-fatal): %s", e)
 
     async def on_ready(self):
         log.info("Logged in as %s (ID: %s)", self.user, self.user.id)
