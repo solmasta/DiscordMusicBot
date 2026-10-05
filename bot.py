@@ -405,11 +405,30 @@ async def health_server():
 
 
 async def main():
+    # Start health server first as an independent task so it survives bot crashes.
+    # This keeps the Fly.io machine alive and logs readable even if the bot fails.
+    asyncio.get_running_loop().create_task(health_server())
+    await asyncio.sleep(1)  # Let aiohttp bind before continuing
+
     if not TOKEN:
-        raise ValueError("DISCORD_TOKEN is not set. Copy .env.example to .env and add your token.")
-    bot = MusicBot()
-    async with bot:
-        await asyncio.gather(bot.start(TOKEN), health_server())
+        log.error(
+            "DISCORD_TOKEN is not set! "
+            "Run: fly secrets set DISCORD_TOKEN=<token> --app discordmusicbot-k-zztq"
+        )
+        while True:
+            await asyncio.sleep(60)
+
+    while True:
+        try:
+            bot = MusicBot()
+            async with bot:
+                await bot.start(TOKEN)
+        except discord.LoginFailure as e:
+            log.error("Invalid Discord token — check DISCORD_TOKEN secret: %s", e)
+            await asyncio.sleep(60)
+        except Exception as e:
+            log.error("Bot crashed, restarting in 30s: %s", e, exc_info=True)
+            await asyncio.sleep(30)
 
 
 if __name__ == "__main__":
