@@ -12,4 +12,4 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["sh", "-c", "echo 'Container starting...' && exec python bot.py"]
+CMD ["python", "-u", "bot.py"]
