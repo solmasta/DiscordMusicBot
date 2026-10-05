@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
-# Install FFmpeg
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && \
+# Install FFmpeg and audio libraries needed by discord.py voice
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg libffi-dev libsodium-dev libopus0 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
