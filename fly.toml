@@ -25,6 +25,10 @@ RADIO_CHANNEL_ID = "985413944514600970"
     path = "/health"
     method = "GET"
 
+[restart]
+  policy = "always"
+  max_retries = 5
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"
