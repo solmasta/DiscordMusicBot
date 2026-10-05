@@ -7,18 +7,9 @@ primary_region = "ord"
 GUILD_ID = "985413944514600968"
 RADIO_URL = "https://tunein.com/radio/s30358/"
 RADIO_CHANNEL_ID = "985413944514600970"
-PORT = "8080"
 
 # Secrets (set once via CLI, never committed):
 #   fly secrets set DISCORD_TOKEN=your_token_here
-
-[[services]]
-  internal_port = 8080
-  protocol = "tcp"
-
-  [[services.tcp_checks]]
-    interval = "15s"
-    timeout = "2s"
 
 [[vm]]
   size = "shared-cpu-1x"
