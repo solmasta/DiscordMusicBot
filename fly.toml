@@ -5,7 +5,7 @@ primary_region = "ams"
 
 [env]
 GUILD_ID = "985413944514600968"
-RADIO_URL = "https://tunein.com/radio/s30358/"
+RADIO_URL = "https://playerservices.streamtheworld.com/api/livestream-redirect/WKQXFM.mp3"
 RADIO_CHANNEL_ID = "985413944514600970"
 
 # Secrets (set once via CLI, never committed):

@@ -2,7 +2,6 @@ import os
 import asyncio
 import logging
 import discord
-import yt_dlp
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
@@ -18,7 +17,11 @@ log = logging.getLogger("bot")
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
 RADIO_CHANNEL_ID = os.getenv("RADIO_CHANNEL_ID")
-RADIO_URL = os.getenv("RADIO_URL", "https://tunein.com/radio/s30358/")  # Q101 / Crue FM
+# Direct streamtheworld URL — FFmpeg follows the 302 redirect to the live Q101 stream
+RADIO_URL = os.getenv(
+    "RADIO_URL",
+    "https://playerservices.streamtheworld.com/api/livestream-redirect/WKQXFM.mp3",
+)
 
 FFMPEG_RADIO_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -31,7 +34,6 @@ class MusicBot(commands.Bot):
         intents = discord.Intents.default()
         intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents)
-        self._resolved_stream_url: str = ""
 
     async def setup_hook(self):
         await self.load_extension("cogs.music")
@@ -85,76 +87,12 @@ class MusicBot(commands.Bot):
                             await vc.disconnect()
                             log.info("Auto-disconnected from empty channel in %s", before.channel.guild.name)
 
-    async def _resolve_stream_url(self, url: str) -> str:
-        """Resolve a TuneIn page or playlist URL to a direct audio stream URL."""
-        import re
-        import aiohttp
-
-        async def resolve_playlist(playlist_url: str, session: aiohttp.ClientSession) -> str:
-            async with session.get(playlist_url, allow_redirects=True) as resp:
-                text = await resp.text()
-            pls_match = re.search(r"^File\d+=(.+)$", text, re.MULTILINE | re.IGNORECASE)
-            if pls_match:
-                return pls_match.group(1).strip()
-            for line in text.splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and line.startswith("http"):
-                    return line
-            return playlist_url
-
-        tunein_match = re.search(r"tunein\.com.*?/(s\d+)", url)
-        if tunein_match:
-            station_id = tunein_match.group(1)
-            opml_url = f"https://opml.radiotime.com/Tune.ashx?id={station_id}&render=json"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(opml_url) as resp:
-                    data = await resp.json(content_type=None)
-                for item in data.get("body", []):
-                    stream = item.get("url", "")
-                    if stream and not stream.startswith("http://opml"):
-                        if any(stream.lower().endswith(ext) or f".{ext}?" in stream.lower()
-                               for ext in ("pls", "m3u", "m3u8")):
-                            log.info("Radio: resolving playlist %s", stream)
-                            stream = await resolve_playlist(stream, session)
-                        log.info("Radio: resolved TuneIn %s → %s", station_id, stream)
-                        return stream
-
-        opts = {"format": "bestaudio/best", "quiet": True, "no_warnings": True, "noplaylist": True}
-        loop = asyncio.get_running_loop()
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-        if "entries" in data:
-            entries = [e for e in (data.get("entries") or []) if e]
-            if not entries:
-                raise ValueError("No stream found for this URL")
-            data = entries[0]
-        return data.get("url") or (data.get("formats") or [{}])[0].get("url", url)
-
-    async def _start_radio(self, vc: discord.VoiceClient):
-        """Resolve Q101 stream URL and start playback."""
-        if not self._resolved_stream_url:
-            try:
-                self._resolved_stream_url = await self._resolve_stream_url(RADIO_URL)
-                log.info("Radio: resolved stream → %s", self._resolved_stream_url)
-            except Exception as e:
-                log.error("Radio: failed to resolve stream URL: %s", e)
-                return
-
+    def _start_playing(self, vc: discord.VoiceClient):
         if vc.is_playing() or vc.is_paused():
             vc.stop()
-
-        try:
-            source = discord.FFmpegPCMAudio(self._resolved_stream_url, **FFMPEG_RADIO_OPTIONS)
-            vc.play(source, after=lambda err: self._on_stream_end(err))
-            log.info("Radio: playing Q101")
-        except Exception as e:
-            log.error("Radio: failed to start playback: %s", e)
-            self._resolved_stream_url = ""  # force re-resolve next time
-
-    def _on_stream_end(self, error):
-        if error:
-            log.warning("Radio: stream ended with error: %s — will reconnect", error)
-            self._resolved_stream_url = ""  # force fresh URL on next keepalive tick
+        source = discord.FFmpegPCMAudio(RADIO_URL, **FFMPEG_RADIO_OPTIONS)
+        vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None)
+        log.info("Radio: playing Q101 → %s", RADIO_URL)
 
     @tasks.loop(seconds=5)
     async def _radio_keepalive(self):
@@ -178,7 +116,7 @@ class MusicBot(commands.Bot):
             await vc.move_to(channel)
 
         if not vc.is_playing() and not vc.is_paused():
-            await self._start_radio(vc)
+            self._start_playing(vc)
 
     @_radio_keepalive.before_loop
     async def _before_keepalive(self):
