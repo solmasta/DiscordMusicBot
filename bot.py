@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import re
 import time
 import xml.etree.ElementTree as ET
 import aiohttp
@@ -55,6 +56,8 @@ class MusicBot(commands.Bot):
         self._q_break = False           # Q101 is in a commercial break
         self._r_break: bool | None = None  # Rock 95.5 break state; None = unknown (API down)
         self._last_switch = 0.0
+        self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
+        self._rock_task: asyncio.Task | None = None
 
     async def setup_hook(self):
         self._http = aiohttp.ClientSession()
@@ -92,8 +95,12 @@ class MusicBot(commands.Bot):
                 self._radio_keepalive.start()
             if not self._break_monitor.is_running():
                 self._break_monitor.start()
+            if self._rock_task is None or self._rock_task.done():
+                self._rock_task = asyncio.create_task(self._rock_icy_loop())
 
     async def close(self):
+        if self._rock_task:
+            self._rock_task.cancel()
         if self._http:
             await self._http.close()
         await super().close()
@@ -172,12 +179,62 @@ class MusicBot(commands.Bot):
             return False
         return time.time() * 1000 < ad[0] + ad[1] + Q101_BREAK_GRACE_MS
 
+    def _rock_icy_event(self, meta: str):
+        """Fast signal: iHeart tags songs song_spot M/F (with a length) and commercials/sweepers T."""
+        spot = re.search(r'song_spot="(\w)"', meta)
+        if not spot:
+            return
+        if spot.group(1) == "T":
+            self._rock_music_until = 0.0
+            return
+        length = re.search(r'length="(\d+):(\d+):(\d+)"', meta)
+        if length:
+            h, m, sec = map(int, length.groups())
+            if h * 3600 + m * 60 + sec > 0:
+                self._rock_music_until = time.monotonic() + h * 3600 + m * 60 + sec + 5
+
+    async def _rock_icy_once(self):
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
+        headers = {"Icy-MetaData": "1", "User-Agent": "Mozilla/5.0"}
+        async with self._http.get(ROCK_URL, headers=headers, timeout=timeout) as resp:
+            metaint = int(resp.headers.get("icy-metaint", 0))
+            if not metaint:
+                raise RuntimeError("no ICY metadata")
+            first = True
+            while True:
+                await resp.content.readexactly(metaint)
+                length = (await resp.content.readexactly(1))[0] * 16
+                if not length:
+                    continue
+                meta = (await resp.content.readexactly(length)).decode("utf-8", "ignore")
+                # The block sent on connect describes a song already in progress, so only
+                # trust song starts seen after that.
+                if first:
+                    first = False
+                    continue
+                self._rock_icy_event(meta)
+
+    async def _rock_icy_loop(self):
+        while True:
+            try:
+                await self._rock_icy_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("Rock 95.5 ICY reader error: %s", e)
+            self._rock_music_until = 0.0
+            await asyncio.sleep(5)
+
     async def _rock_in_break(self) -> bool:
+        # iHeart publishes a new song ~70s after it starts, so a live song-start signal from the
+        # ICY reader (valid until that song should end) overrides the history-based gap check.
         url = IHEART_URL.format(stream=ROCK_STREAM_ID)
         async with self._http.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
             tracks = (await resp.json())["data"]
         if not tracks:
             raise ValueError("empty track history")
+        if time.monotonic() < self._rock_music_until:
+            return False
         return time.time() > tracks[0]["endTime"] + ROCK_BREAK_GRACE_S
 
     @tasks.loop(seconds=5)
