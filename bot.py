@@ -40,14 +40,19 @@ ROCK_BREAK_GRACE_S = 15
 MIN_SWITCH_SECONDS = 10
 FAILS_BEFORE_UNKNOWN = 3
 
+# Loudness leveling. The streams arrive at very different levels (measured: Q101 -16.4 LUFS,
+# Rock 95.5 -8.2, The Drive -13.8) and all are hot for a voice channel, so each station gets a
+# fixed gain that brings it to about -20 LUFS. /volume then scales that level.
+TARGET_LUFS = -20
+
 # Rotation order. The station that's on keeps playing until it hits a commercial break, then the
 # bot moves to the next station in this list that is on music (wrapping around).
 #   triton = streamtheworld stations (Triton now-playing ad cues); iheart = Rock 95.5.
 STATIONS = [
-    {"key": "q101", "name": "Q101", "url": RADIO_URL, "kind": "triton", "mount": "WKQXFM"},
-    {"key": "rock", "name": "Rock 95.5", "url": ROCK_URL, "kind": "iheart"},
+    {"key": "q101", "name": "Q101", "url": RADIO_URL, "kind": "triton", "mount": "WKQXFM", "gain_db": -3.6},
+    {"key": "rock", "name": "Rock 95.5", "url": ROCK_URL, "kind": "iheart", "gain_db": -11.8},
     {
-        "key": "drive", "name": "97.1 The Drive", "kind": "triton", "mount": DRIVE_MOUNT,
+        "key": "drive", "name": "97.1 The Drive", "kind": "triton", "mount": DRIVE_MOUNT, "gain_db": -6.2,
         "url": f"https://playerservices.streamtheworld.com/api/livestream-redirect/{DRIVE_MOUNT}.mp3",
     },
 ]
@@ -79,6 +84,7 @@ class MusicBot(commands.Bot):
         self._now: dict[str, tuple[str, str] | None] = {st["key"]: None for st in STATIONS}  # (artist, title)
         self._rock_icy_song: tuple[str, str, float] | None = None
         self._last_presence = ""
+        self.radio_volume = float(os.getenv("RADIO_VOLUME", "1.0"))  # master level, set by /volume
         self._last_switch = 0.0
         self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
         self._rock_task: asyncio.Task | None = None
@@ -162,7 +168,10 @@ class MusicBot(commands.Bot):
         if vc.is_playing() or vc.is_paused():
             vc.stop()
         st = STATION_BY_KEY[self._current]
-        source = discord.FFmpegPCMAudio(st["url"], **FFMPEG_RADIO_OPTIONS)
+        opts = {**FFMPEG_RADIO_OPTIONS, "options": f"-vn -af volume={st['gain_db']}dB"}
+        source = discord.PCMVolumeTransformer(
+            discord.FFmpegPCMAudio(st["url"], **opts), volume=self.radio_volume
+        )
         vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None)
         log.info("Radio: playing %s → %s", st["name"], st["url"])
 

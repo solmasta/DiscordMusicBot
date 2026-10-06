@@ -361,6 +361,7 @@ class Music(commands.Cog):
     async def volume(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 100]):
         state = self._get_state(interaction.guild_id)
         state.volume = level / 100
+        self.bot.radio_volume = state.volume
         vc = interaction.guild.voice_client
         if vc and vc.source:
             # Wrap in PCMVolumeTransformer if not already
