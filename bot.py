@@ -1,14 +1,18 @@
 import os
 import asyncio
+import io
 import logging
 import re
 import string
 import time
+import urllib.parse
 import xml.etree.ElementTree as ET
 import aiohttp
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+
+import visuals
 
 load_dotenv()
 
@@ -65,6 +69,10 @@ FFMPEG_RADIO_OPTIONS = {
 }
 
 
+NOW_PLAYING = os.getenv("NOW_PLAYING", "1") != "0"
+# Where the live Now Playing card lives: a text channel ID, or (default) the radio channel's own chat.
+NOW_PLAYING_CHANNEL_ID = os.getenv("NOW_PLAYING_CHANNEL_ID") or RADIO_CHANNEL_ID
+CARD_REFRESH_S = 20        # re-render the card at least this often so the equalizer stays fresh
 PROMPT_COOLDOWN_S = 1800   # don't re-prompt the same person more often than this
 JOIN_MUTE = os.getenv("JOIN_MUTE", "1") != "0"   # silence the radio while a joiner decides
 MUTE_TIMEOUT_S = int(os.getenv("MUTE_TIMEOUT_S", "30"))  # ...but never longer than this
@@ -139,6 +147,14 @@ class MusicBot(commands.Bot):
         self._last_presence = ""
         self.radio_volume = float(os.getenv("RADIO_VOLUME", "1.0"))  # master level, set by /volume
         self._prompted: dict[int, float] = {}  # user id -> last time they got the join prompt
+        self._tap: visuals.SpectrumTap | None = None
+        self._song_span: dict[str, tuple[float, float] | None] = {st["key"]: None for st in STATIONS}
+        self._np_message: discord.Message | None = None
+        self._np_key = None
+        self._np_last = 0.0
+        self._np_backoff = 0.0
+        self._np_art: bytes | None = None
+        self._art_cache: dict[tuple[str, str], bytes | None] = {}
         self._pending: dict[int, asyncio.Task] = {}  # people deciding on the prompt -> timeout timer
         self._last_switch = 0.0
         self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
@@ -193,6 +209,8 @@ class MusicBot(commands.Bot):
                 self._break_monitor.start()
             if self._rock_task is None or self._rock_task.done():
                 self._rock_task = asyncio.create_task(self._rock_icy_loop())
+            if NOW_PLAYING and NOW_PLAYING_CHANNEL_ID and not self._card_loop.is_running():
+                self._card_loop.start()
 
     async def close(self):
         if self._rock_task:
@@ -316,9 +334,8 @@ class MusicBot(commands.Bot):
             vc.stop()
         st = STATION_BY_KEY[self._current]
         opts = {**FFMPEG_RADIO_OPTIONS, "options": f"-vn -af volume={st['gain_db']}dB"}
-        source = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(st["url"], **opts), volume=self._effective_volume()
-        )
+        self._tap = visuals.SpectrumTap(discord.FFmpegPCMAudio(st["url"], **opts))
+        source = discord.PCMVolumeTransformer(self._tap, volume=self._effective_volume())
         vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None)
         log.info("Radio: playing %s → %s", st["name"], st["url"])
 
@@ -385,6 +402,7 @@ class MusicBot(commands.Bot):
         if track and track[2]:
             self._now[key] = (_pretty(track[3]), _pretty(track[2]))
             self._song_end[key] = (track[0] + track[1]) / 1000 if track[1] > 0 else None
+            self._song_span[key] = (track[0] / 1000, (track[0] + track[1]) / 1000) if track[1] > 0 else None
         if not ad:
             return False
         if track and track[0] >= ad[0]:
@@ -465,8 +483,10 @@ class MusicBot(commands.Bot):
         self._now["rock"] = (_pretty(song[0]), _pretty(song[1]))
         if time.monotonic() < self._rock_music_until:
             self._song_end["rock"] = time.time() + (self._rock_music_until - time.monotonic() - 5)
+            self._song_span["rock"] = None
             return False
         self._song_end["rock"] = latest["endTime"]
+        self._song_span["rock"] = (latest["startTime"], latest["endTime"])
         return time.time() > latest["endTime"] + ROCK_BREAK_GRACE_S
 
     @tasks.loop(seconds=5)
@@ -520,6 +540,133 @@ class MusicBot(commands.Bot):
             )
         except Exception as e:
             log.warning("Could not update status: %s", e)
+
+    def _progress(self, key: str) -> float | None:
+        span = self._song_span.get(key)
+        if not span or span[1] <= span[0]:
+            return None
+        return min(1.0, max(0.0, (time.time() - span[0]) / (span[1] - span[0])))
+
+    async def _fetch_art(self, artist: str, title: str) -> bytes | None:
+        """Album cover from Apple's public search; only accepted if the artist really matches."""
+        key = (artist.lower(), title.lower())
+        if key in self._art_cache:
+            return self._art_cache[key]
+        art = None
+        try:
+            q = urllib.parse.urlencode({"term": f"{artist} {title}", "entity": "song", "limit": 5})
+            timeout = aiohttp.ClientTimeout(total=8)
+            async with self._http.get(f"https://itunes.apple.com/search?{q}", timeout=timeout) as resp:
+                results = (await resp.json(content_type=None)).get("results") or []
+            want = artist.lower()
+            for r in results:
+                got = (r.get("artistName") or "").lower()
+                if got and (want in got or got in want):
+                    url = r["artworkUrl100"].replace("100x100", "600x600")
+                    async with self._http.get(url, timeout=timeout) as resp:
+                        art = await resp.read()
+                    break
+        except Exception as e:
+            log.warning("Album art lookup failed for %s – %s: %s", artist, title, e)
+        if len(self._art_cache) >= 60:
+            self._art_cache.pop(next(iter(self._art_cache)))
+        self._art_cache[key] = art
+        return art
+
+    def _card_text(self, st: dict, song_line: str, commercial: bool) -> str:
+        head = f"**Commercial break** · {st['name']}" if commercial else f"**{song_line}** · {st['name']}"
+        others = []
+        for o in STATIONS:
+            if o["key"] == st["key"]:
+                continue
+            state = self._breaks[o["key"]]
+            if state is True:
+                others.append(f"{o['name']} 📢")
+            elif state is False:
+                s2 = self._song_text(o["key"])
+                others.append(f"{o['name']} 🎵 {s2}" if s2 else f"{o['name']} 🎵")
+        return head + ("\n" + "  ·  ".join(others) if others else "")
+
+    async def _find_card(self, channel) -> discord.Message | None:
+        """After a restart, reuse the card we already posted instead of adding a new one."""
+        async for m in channel.history(limit=30):
+            if m.author.id == self.user.id and m.embeds and (m.embeds[0].footer.text or "").startswith("Crue FM"):
+                return m
+        return None
+
+    async def _update_card(self):
+        now = time.monotonic()
+        if now < self._np_backoff or not self._checked:
+            return
+        cur = self._current
+        st = STATION_BY_KEY[cur]
+        commercial = self._breaks[cur] is True
+        song = self._now.get(cur)
+        key = (cur, song, commercial)
+        if key == self._np_key and now - self._np_last < CARD_REFRESH_S:
+            return
+        channel = self.get_channel(int(NOW_PLAYING_CHANNEL_ID))
+        if channel is None:
+            self._np_backoff = now + 300
+            log.warning("Now Playing channel %s not found", NOW_PLAYING_CHANNEL_ID)
+            return
+
+        if song and not commercial:
+            self._np_art = await self._fetch_art(song[0], song[1]) if song[0] else None
+        title = song[1] if song else st["name"]
+        artist = (song[0] if song and song[0] else "Live radio")
+        note = ""
+        if commercial:
+            alt = self._pick_music_station([k for k in self._breaks if k != cur])
+            note = f"Switching to {STATION_BY_KEY[alt]['name']}…" if alt else "Every station is in a break — hang tight"
+        spectrum = list(self._tap.history)[-30:] if self._tap else []
+        gif, accent = await asyncio.to_thread(
+            visuals.render_banner, self._np_art, st["name"], title, artist,
+            None if commercial else self._progress(cur), spectrum, commercial, note,
+        )
+        embed = discord.Embed(
+            description=self._card_text(st, self._song_text(cur) or st["name"], commercial),
+            color=discord.Color.from_rgb(*accent),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_image(url="attachment://nowplaying.gif")
+        embed.set_footer(text="Crue FM · live")
+
+        def new_file():
+            return discord.File(io.BytesIO(gif), filename="nowplaying.gif")
+
+        try:
+            if self._np_message is None:
+                self._np_message = await self._find_card(channel)
+            if self._np_message is not None:
+                try:
+                    await self._np_message.edit(embed=embed, attachments=[new_file()])
+                except discord.NotFound:
+                    self._np_message = None
+            if self._np_message is None:
+                self._np_message = await channel.send(embed=embed, file=new_file())
+            self._np_key, self._np_last = key, time.monotonic()
+        except discord.Forbidden:
+            self._np_backoff = time.monotonic() + 600
+            log.warning(
+                "Can't post the Now Playing card in #%s — the bot needs View Channel, Send Messages, "
+                "Embed Links, Attach Files and Read Message History there. Retrying in 10 minutes.",
+                getattr(channel, "name", NOW_PLAYING_CHANNEL_ID),
+            )
+        except discord.HTTPException as e:
+            self._np_backoff = time.monotonic() + 60
+            log.warning("Now Playing card update failed: %s", e)
+
+    @tasks.loop(seconds=5)
+    async def _card_loop(self):
+        try:
+            await self._update_card()
+        except Exception as e:
+            log.warning("Now Playing card error: %s", e)
+
+    @_card_loop.before_loop
+    async def _before_card_loop(self):
+        await self.wait_until_ready()
 
     def _radio_embed(self) -> discord.Embed:
         cur = STATION_BY_KEY[self._current]
