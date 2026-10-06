@@ -64,6 +64,50 @@ FFMPEG_RADIO_OPTIONS = {
 }
 
 
+PROMPT_COOLDOWN_S = 1800   # don't re-prompt the same person more often than this
+
+
+class JoinPrompt(discord.ui.View):
+    """Per-person heads-up shown when someone joins the radio channel. Buttons only affect
+    this message; the radio itself is never controlled from here."""
+
+    def __init__(self, user_id: int):
+        super().__init__(timeout=900)
+        self.user_id = user_id
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This prompt is for someone else.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="👍")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            content="Enjoy the music! 🎶 You can change it just for you any time: right-click "
+                    "**Crue FM** in the voice channel → **User Volume** or **Mute**.",
+            embed=None, view=None,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def dismiss(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            pass
+        self.stop()
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
+
 def _pretty(text: str) -> str:
     """Some feeds send ALL CAPS names (The Drive, Rock 95.5 jingles); make them readable."""
     text = (text or "").strip()
@@ -85,6 +129,7 @@ class MusicBot(commands.Bot):
         self._rock_icy_song: tuple[str, str, float] | None = None
         self._last_presence = ""
         self.radio_volume = float(os.getenv("RADIO_VOLUME", "1.0"))  # master level, set by /volume
+        self._prompted: dict[int, float] = {}  # user id -> last time they got the join prompt
         self._last_switch = 0.0
         self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
         self._rock_task: asyncio.Task | None = None
@@ -146,8 +191,53 @@ class MusicBot(commands.Bot):
             await self._http.close()
         await super().close()
 
+    def _join_prompt_embed(self, channel_name: str) -> discord.Embed:
+        st = STATION_BY_KEY[self._current]
+        if self._breaks[self._current] is True:
+            now = f"Commercial break · {st['name']}"
+        else:
+            song = self._song_text(self._current)
+            now = f"{song} · {st['name']}" if song else st["name"]
+        return discord.Embed(
+            title=f"📻 Crue FM is playing in {channel_name}",
+            description=(
+                f"**Now playing:** {now}\n\n"
+                "Too loud for you? **Right-click Crue FM** in the voice channel and drag "
+                "**User Volume** down, or choose **Mute**. That only changes what *you* hear — "
+                "nobody else is affected."
+            ),
+            color=discord.Color.red(),
+        )
+
+    async def _send_join_prompt(self, member: discord.Member, channel: discord.VoiceChannel):
+        now = time.monotonic()
+        last = self._prompted.get(member.id)
+        if last is not None and now - last < PROMPT_COOLDOWN_S:
+            return
+        self._prompted[member.id] = now
+        embed = self._join_prompt_embed(channel.name)
+        view = JoinPrompt(member.id)
+        try:
+            view.message = await member.send(embed=embed, view=view)
+            log.info("Join prompt sent to %s by DM", member)
+        except discord.HTTPException:
+            try:
+                view.message = await channel.send(
+                    content=member.mention, embed=embed, view=view, delete_after=120
+                )
+                log.info("Join prompt for %s posted in channel chat (DMs closed)", member)
+            except discord.HTTPException as e:
+                log.warning("Could not send join prompt to %s: %s", member, e)
+
     async def on_voice_state_update(self, member, before, after):
         if RADIO_URL and RADIO_CHANNEL_ID:
+            if (
+                not member.bot
+                and after.channel
+                and after.channel.id == int(RADIO_CHANNEL_ID)
+                and (before.channel is None or before.channel.id != after.channel.id)
+            ):
+                asyncio.create_task(self._send_join_prompt(member, after.channel))
             return
         if member == self.user:
             return
