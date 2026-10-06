@@ -48,13 +48,12 @@ class MusicBot(commands.Bot):
                 await self.tree.sync()
                 log.info("Slash commands synced globally (may take up to 1 hour)")
         except discord.Forbidden:
-            log.warning(
-                "Could not sync slash commands (Missing Access). "
-                "Re-invite the bot with the applications.commands scope: "
-                "https://discord.com/api/oauth2/authorize"
-                "?client_id=%s&permissions=3148800&scope=bot+applications.commands",
-                self.application_id,
-            )
+            log.warning("Guild sync forbidden (Missing Access) — falling back to global sync")
+            try:
+                await self.tree.sync()
+                log.info("Slash commands synced globally")
+            except Exception as e:
+                log.warning("Global slash command sync failed (non-fatal): %s", e)
         except Exception as e:
             log.warning("Slash command sync failed (non-fatal): %s", e)
 
