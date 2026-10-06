@@ -66,19 +66,22 @@ FFMPEG_RADIO_OPTIONS = {
 
 
 PROMPT_COOLDOWN_S = 1800   # don't re-prompt the same person more often than this
+JOIN_HOLD = os.getenv("JOIN_HOLD", "1") != "0"   # keep a joiner's audio off until they approve
+HOLD_TIMEOUT_S = 120                             # ...but never longer than this
 
 
 class JoinPrompt(discord.ui.View):
-    """Per-person heads-up shown when someone joins the radio channel. Buttons only affect
-    this message; the radio itself is never controlled from here."""
+    """Per-person prompt shown when someone joins the radio channel. Approve/Dismiss only affect
+    this person (their audio comes back); the shared radio is never controlled from here."""
 
-    def __init__(self, user_id: int):
+    def __init__(self, bot: "MusicBot", member: discord.Member):
         super().__init__(timeout=900)
-        self.user_id = user_id
+        self.bot = bot
+        self.member = member
         self.message: discord.Message | None = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
+        if interaction.user.id != self.member.id:
             await interaction.response.send_message("This prompt is for someone else.", ephemeral=True)
             return False
         return True
@@ -86,20 +89,23 @@ class JoinPrompt(discord.ui.View):
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="👍")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(
-            content="Enjoy the music! 🎶 You can change it just for you any time: right-click "
+            content="✅ Radio on — enjoy! 🎶 You can change it just for you any time: right-click "
                     "**Crue FM** in the voice channel → **User Volume** or **Mute**.",
             embed=None, view=None,
         )
         self.stop()
+        await self.bot._release(self.member, "approved")
 
     @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def dismiss(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        try:
-            await interaction.message.delete()
-        except discord.HTTPException:
-            pass
+        await interaction.response.edit_message(
+            content="Okay. Discord can't silence just the radio for one person, so your audio is "
+                    "back on. If you'd rather not hear it: right-click **Crue FM** in the voice "
+                    "channel → **Mute**.",
+            embed=None, view=None,
+        )
         self.stop()
+        await self.bot._release(self.member, "dismissed")
 
     async def on_timeout(self):
         if self.message:
@@ -133,6 +139,9 @@ class MusicBot(commands.Bot):
         self._last_presence = ""
         self.radio_volume = float(os.getenv("RADIO_VOLUME", "1.0"))  # master level, set by /volume
         self._prompted: dict[int, float] = {}  # user id -> last time they got the join prompt
+        self._held: dict[int, asyncio.Task] = {}  # user id -> timer that restores their audio
+        self._leftover: set[int] = set()          # people still deafened because they left mid-prompt
+        self._hold_denied = 0.0                   # monotonic time before which holds are skipped (no permission)
         self._last_switch = 0.0
         self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
         self._rock_task: asyncio.Task | None = None
@@ -186,6 +195,7 @@ class MusicBot(commands.Bot):
                 self._break_monitor.start()
             if self._rock_task is None or self._rock_task.done():
                 self._rock_task = asyncio.create_task(self._rock_icy_loop())
+            asyncio.create_task(self._clear_leftover_holds())
 
     async def close(self):
         if self._rock_task:
@@ -194,23 +204,77 @@ class MusicBot(commands.Bot):
             await self._http.close()
         await super().close()
 
-    def _join_prompt_embed(self, channel_name: str) -> discord.Embed:
+    def _join_prompt_embed(self, channel_name: str, held: bool) -> discord.Embed:
         st = STATION_BY_KEY[self._current]
         if self._breaks[self._current] is True:
             now = f"Commercial break · {st['name']}"
         else:
             song = self._song_text(self._current)
             now = f"{song} · {st['name']}" if song else st["name"]
-        return discord.Embed(
-            title=f"📻 Crue FM is playing in {channel_name}",
-            description=(
+        if held:
+            body = (
+                f"**Now playing:** {now}\n\n"
+                "🔇 I've paused your audio so the radio doesn't blast you — you can't hear "
+                "anything in the channel yet.\n"
+                f"**Approve** to start listening. (Your audio comes back on its own in "
+                f"{HOLD_TIMEOUT_S // 60} minutes if you don't choose.)\n\n"
+                "Once you're in, turn it down just for you: right-click **Crue FM** → "
+                "**User Volume** or **Mute**."
+            )
+        else:
+            body = (
                 f"**Now playing:** {now}\n\n"
                 "Too loud for you? **Right-click Crue FM** in the voice channel and drag "
                 "**User Volume** down, or choose **Mute**. That only changes what *you* hear — "
                 "nobody else is affected."
-            ),
-            color=discord.Color.red(),
+            )
+        return discord.Embed(
+            title=f"📻 Crue FM is playing in {channel_name}", description=body, color=discord.Color.red()
         )
+
+    async def _hold(self, member: discord.Member) -> bool:
+        """Server-deafen a joiner so they hear nothing until they approve."""
+        try:
+            await member.edit(deafen=True, reason="Crue FM: waiting for join approval")
+            return True
+        except discord.Forbidden:
+            self._hold_denied = time.monotonic() + 600
+            log.warning("Join hold needs the 'Deafen Members' permission — pausing it for 10 minutes")
+        except discord.HTTPException as e:
+            log.warning("Could not hold %s's audio: %s", member, e)
+        return False
+
+    async def _set_deaf_off(self, member: discord.Member, reason: str) -> bool:
+        try:
+            await member.edit(deafen=False, reason=reason)
+            return True
+        except discord.HTTPException as e:
+            log.warning("Could not restore %s's audio: %s", member, e)
+            return False
+
+    async def _release(self, member: discord.Member, why: str):
+        timer = self._held.pop(member.id, None)
+        if timer is None:
+            return
+        if timer is not asyncio.current_task():
+            timer.cancel()
+        if await self._set_deaf_off(member, f"Crue FM: {why}"):
+            log.info("Audio restored for %s (%s)", member, why)
+        else:
+            self._leftover.add(member.id)
+
+    async def _release_after(self, member: discord.Member):
+        await asyncio.sleep(HOLD_TIMEOUT_S)
+        await self._release(member, "timed out")
+
+    async def _clear_leftover_holds(self):
+        """After a restart, free anyone still deafened in the radio channel from an earlier prompt."""
+        if not JOIN_HOLD:
+            return
+        channel = self.get_channel(int(RADIO_CHANNEL_ID))
+        for m in getattr(channel, "members", []):
+            if not m.bot and m.voice and m.voice.deaf and m.id not in self._held:
+                await self._set_deaf_off(m, "Crue FM: clearing leftover hold after restart")
 
     async def _send_join_prompt(self, member: discord.Member, channel: discord.VoiceChannel):
         now = time.monotonic()
@@ -218,28 +282,51 @@ class MusicBot(commands.Bot):
         if last is not None and now - last < PROMPT_COOLDOWN_S:
             return
         self._prompted[member.id] = now
-        embed = self._join_prompt_embed(channel.name)
-        view = JoinPrompt(member.id)
+        held = JOIN_HOLD and time.monotonic() >= self._hold_denied and await self._hold(member)
+        embed = self._join_prompt_embed(channel.name, held)
+        view = JoinPrompt(self, member)
+        sent = False
         try:
             view.message = await member.send(embed=embed, view=view)
+            sent = True
             log.info("Join prompt sent to %s by DM", member)
         except discord.HTTPException:
             try:
                 view.message = await channel.send(
-                    content=member.mention, embed=embed, view=view, delete_after=120
+                    content=member.mention, embed=embed, view=view, delete_after=HOLD_TIMEOUT_S
                 )
+                sent = True
                 log.info("Join prompt for %s posted in channel chat (DMs closed)", member)
             except discord.HTTPException as e:
                 log.warning("Could not send join prompt to %s: %s", member, e)
+        if held:
+            if sent:
+                self._held[member.id] = asyncio.create_task(self._release_after(member))
+            else:
+                await self._set_deaf_off(member, "Crue FM: prompt could not be delivered")
 
     async def on_voice_state_update(self, member, before, after):
         if RADIO_URL and RADIO_CHANNEL_ID:
+            radio_id = int(RADIO_CHANNEL_ID)
+            if JOIN_HOLD and not member.bot:
+                if member.id in self._leftover and after.channel:
+                    # They left mid-prompt, so we couldn't lift the deafen; do it now they're back.
+                    self._leftover.discard(member.id)
+                    await self._set_deaf_off(member, "Crue FM: clearing leftover hold")
+                elif member.id in self._held and (after.channel is None or after.channel.id != radio_id):
+                    if after.channel is None:
+                        self._held.pop(member.id).cancel()
+                        self._leftover.add(member.id)
+                    else:
+                        await self._release(member, "moved to another channel")
             if (
                 not member.bot
                 and after.channel
-                and after.channel.id == int(RADIO_CHANNEL_ID)
+                and after.channel.id == radio_id
                 and (before.channel is None or before.channel.id != after.channel.id)
             ):
+                if JOIN_HOLD and after.deaf and member.id not in self._held:
+                    await self._set_deaf_off(member, "Crue FM: clearing leftover hold")
                 asyncio.create_task(self._send_join_prompt(member, after.channel))
             return
         if member == self.user:
