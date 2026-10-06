@@ -81,6 +81,13 @@ class MusicBot(commands.Bot):
                 self.tree.copy_global_to(guild=guild)
                 await self.tree.sync(guild=guild)
                 log.info("Slash commands synced to guild %s", GUILD_ID)
+                # Earlier runs registered these globally too; clear them so commands don't show twice.
+                try:
+                    self.tree.clear_commands(guild=None)
+                    await self.tree.sync()
+                    log.info("Cleared duplicate global slash commands")
+                except Exception as e:
+                    log.warning("Could not clear global slash commands (non-fatal): %s", e)
             else:
                 await self.tree.sync()
                 log.info("Slash commands synced globally (may take up to 1 hour)")
