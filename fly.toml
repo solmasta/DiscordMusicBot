@@ -4,7 +4,7 @@ primary_region = "ord"
 [build]
 
 [env]
-GUILD_ID = "985413944514600968"
+GUILD_ID = "984970543168098324"
 RADIO_URL = "https://playerservices.streamtheworld.com/api/livestream-redirect/WKQXFM.mp3"
 RADIO_CHANNEL_ID = "985413944514600970"
 
