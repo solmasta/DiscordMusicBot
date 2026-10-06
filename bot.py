@@ -69,6 +69,8 @@ FFMPEG_RADIO_OPTIONS = {
 }
 
 
+BRANDING = os.getenv("BRANDING", "1") != "0"   # set the bot's icon and banner from assets/
+ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 NOW_PLAYING = os.getenv("NOW_PLAYING", "1") != "0"
 # Where the live Now Playing card lives: a text channel ID, or (default) the radio channel's own chat.
 NOW_PLAYING_CHANNEL_ID = os.getenv("NOW_PLAYING_CHANNEL_ID") or RADIO_CHANNEL_ID
@@ -147,6 +149,7 @@ class MusicBot(commands.Bot):
         self._last_presence = ""
         self.radio_volume = float(os.getenv("RADIO_VOLUME", "1.0"))  # master level, set by /volume
         self._prompted: dict[int, float] = {}  # user id -> last time they got the join prompt
+        self._branding_done = False
         self._tap: visuals.SpectrumTap | None = None
         self._song_span: dict[str, tuple[float, float] | None] = {st["key"]: None for st in STATIONS}
         self._np_message: discord.Message | None = None
@@ -211,6 +214,9 @@ class MusicBot(commands.Bot):
                 self._rock_task = asyncio.create_task(self._rock_icy_loop())
             if NOW_PLAYING and NOW_PLAYING_CHANNEL_ID and not self._card_loop.is_running():
                 self._card_loop.start()
+        if BRANDING and not self._branding_done:
+            self._branding_done = True
+            asyncio.create_task(self._apply_branding())
 
     async def close(self):
         if self._rock_task:
@@ -540,6 +546,37 @@ class MusicBot(commands.Bot):
             )
         except Exception as e:
             log.warning("Could not update status: %s", e)
+
+    async def _apply_branding(self):
+        """Give the bot its icon and profile banner once, skipping anything Discord already has
+        (avatar changes are rate-limited, so never re-upload on every restart)."""
+        try:
+            user = await self.fetch_user(self.user.id)
+        except discord.HTTPException as e:
+            log.warning("Branding skipped (could not read the bot profile): %s", e)
+            return
+        jobs = (
+            ("avatar", "icon.png", user.avatar, 512, (48, 48)),
+            ("banner", "banner.png", user.banner, 1024, (68, 24)),
+        )
+        for field, filename, asset, px, cmp_size in jobs:
+            path = os.path.join(ASSET_DIR, filename)
+            if not os.path.exists(path):
+                continue
+            if asset is not None:
+                try:
+                    current = await asset.replace(size=px, format="png").read()
+                    if visuals.looks_like(current, path, cmp_size):
+                        log.info("Bot %s already set", field)
+                        continue
+                except Exception as e:
+                    log.warning("Could not compare the bot %s (will set it): %s", field, e)
+            try:
+                with open(path, "rb") as f:
+                    await self.user.edit(**{field: f.read()})
+                log.info("Bot %s updated", field)
+            except discord.HTTPException as e:
+                log.warning("Could not set the bot %s: %s", field, e)
 
     def _progress(self, key: str) -> float | None:
         span = self._song_span.get(key)

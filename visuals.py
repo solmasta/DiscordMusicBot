@@ -238,3 +238,14 @@ def render_banner(
     buf = io.BytesIO()
     paletted[0].save(buf, "GIF", save_all=True, append_images=paletted[1:], duration=100, loop=0, optimize=False)
     return buf.getvalue(), accent
+
+
+def looks_like(current: bytes, our_file: str, size: tuple[int, int]) -> bool:
+    """True if an image Discord is serving is (nearly) one of our files. Discord re-encodes uploads,
+    so compare small greyscale copies rather than bytes."""
+    try:
+        a = Image.open(io.BytesIO(current)).convert("L").resize(size, Image.LANCZOS)
+        b = Image.open(our_file).convert("L").resize(size, Image.LANCZOS)
+    except Exception:
+        return False
+    return float(np.abs(np.asarray(a, dtype=int) - np.asarray(b, dtype=int)).mean()) < 6.0
