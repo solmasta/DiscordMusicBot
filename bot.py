@@ -39,6 +39,7 @@ ROCK_STREAM_ID = os.getenv("ROCK_STREAM_ID", "857")
 ROCK_BREAK_GRACE_S = 15
 MIN_SWITCH_SECONDS = 10
 FAILS_BEFORE_UNKNOWN = 3
+MIN_RUNWAY_S = 30   # only move to a station that has at least this much of its current song left
 
 # Loudness leveling. The streams arrive at very different levels (measured: Q101 -16.4 LUFS,
 # Rock 95.5 -8.2, The Drive -13.8) and all are hot for a voice channel, so each station gets a
@@ -125,6 +126,8 @@ class MusicBot(commands.Bot):
         self._current = STATIONS[0]["key"]
         self._breaks: dict[str, bool | None] = {st["key"]: None for st in STATIONS}  # None = unknown
         self._fails = {st["key"]: 0 for st in STATIONS}
+        self._song_end: dict[str, float | None] = {st["key"]: None for st in STATIONS}  # epoch secs
+        self._checked = False   # True once the first break check has finished
         self._now: dict[str, tuple[str, str] | None] = {st["key"]: None for st in STATIONS}  # (artist, title)
         self._rock_icy_song: tuple[str, str, float] | None = None
         self._last_presence = ""
@@ -265,6 +268,22 @@ class MusicBot(commands.Bot):
         vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None)
         log.info("Radio: playing %s → %s", st["name"], st["url"])
 
+    def _runway(self, key: str) -> float:
+        """Seconds left in the song a station is playing (infinite if unknown)."""
+        end = self._song_end.get(key)
+        return float("inf") if end is None else end - time.time()
+
+    def _pick_music_station(self, order: list[str]) -> str | None:
+        """First station in `order` that's on music with enough of its song left, else the one with
+        the most left, else None. Avoids hopping onto a station seconds before its own break."""
+        good = [k for k in order if self._breaks[k] is False]
+        if not good:
+            return None
+        for k in good:
+            if self._runway(k) >= MIN_RUNWAY_S:
+                return k
+        return max(good, key=self._runway)
+
     def _reevaluate(self):
         """If the playing station is in a commercial break, move to the next one that's on music."""
         keys = [st["key"] for st in STATIONS]
@@ -273,13 +292,9 @@ class MusicBot(commands.Bot):
         target = cur
         if state is True:
             i = keys.index(cur)
-            for k in keys[i + 1:] + keys[:i]:
-                if self._breaks[k] is False:
-                    target = k
-                    break
+            target = self._pick_music_station(keys[i + 1:] + keys[:i]) or cur
         elif state is None and cur != keys[0]:
-            good = [k for k in keys if self._breaks[k] is False]
-            target = good[0] if good else keys[0]
+            target = self._pick_music_station(keys) or keys[0]
         if target == cur:
             return
         if time.monotonic() - self._last_switch < MIN_SWITCH_SECONDS:
@@ -315,6 +330,7 @@ class MusicBot(commands.Bot):
         track, ad = await asyncio.gather(self._latest_cue(mount, "track"), self._latest_cue(mount, "ad"))
         if track and track[2]:
             self._now[key] = (_pretty(track[3]), _pretty(track[2]))
+            self._song_end[key] = (track[0] + track[1]) / 1000 if track[1] > 0 else None
         if not ad:
             return False
         if track and track[0] >= ad[0]:
@@ -394,7 +410,9 @@ class MusicBot(commands.Bot):
             song = (icy[0], icy[1])
         self._now["rock"] = (_pretty(song[0]), _pretty(song[1]))
         if time.monotonic() < self._rock_music_until:
+            self._song_end["rock"] = time.time() + (self._rock_music_until - time.monotonic() - 5)
             return False
+        self._song_end["rock"] = latest["endTime"]
         return time.time() > latest["endTime"] + ROCK_BREAK_GRACE_S
 
     @tasks.loop(seconds=5)
@@ -413,6 +431,12 @@ class MusicBot(commands.Bot):
             if res != self._breaks[key]:
                 log.info("%s: %s", st["name"], "commercial" if res else "music")
             self._breaks[key] = res
+        if not self._checked:
+            self._checked = True
+            first = self._pick_music_station([st["key"] for st in STATIONS])
+            if first:
+                self._current = first
+            log.info("Starting on %s", STATION_BY_KEY[self._current]["name"])
         self._reevaluate()
         await self._update_presence()
 
@@ -491,6 +515,8 @@ class MusicBot(commands.Bot):
         if vc.channel != channel:
             await vc.move_to(channel)
 
+        if not self._checked:
+            return
         if not vc.is_playing() and not vc.is_paused():
             self._start_playing(vc)
 
