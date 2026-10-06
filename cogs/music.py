@@ -367,6 +367,8 @@ class Music(commands.Cog):
             # Wrap in PCMVolumeTransformer if not already
             if isinstance(vc.source, discord.PCMVolumeTransformer):
                 vc.source.volume = state.volume
+        if hasattr(self.bot, "_apply_volume"):
+            self.bot._apply_volume()   # keeps the radio muted if a joiner is still deciding
         await interaction.response.send_message(f"Volume set to **{level}%**.")
 
     @app_commands.command(name="loop", description="Toggle loop for the current track")
