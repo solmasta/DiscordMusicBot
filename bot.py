@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import re
+import string
 import time
 import xml.etree.ElementTree as ET
 import aiohttp
@@ -58,6 +59,14 @@ FFMPEG_RADIO_OPTIONS = {
 }
 
 
+def _pretty(text: str) -> str:
+    """Some feeds send ALL CAPS names (The Drive, Rock 95.5 jingles); make them readable."""
+    text = (text or "").strip()
+    if text.isupper() and (" " in text or len(text) > 5):
+        text = string.capwords(text)
+    return text
+
+
 class MusicBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -67,6 +76,9 @@ class MusicBot(commands.Bot):
         self._current = STATIONS[0]["key"]
         self._breaks: dict[str, bool | None] = {st["key"]: None for st in STATIONS}  # None = unknown
         self._fails = {st["key"]: 0 for st in STATIONS}
+        self._now: dict[str, tuple[str, str] | None] = {st["key"]: None for st in STATIONS}  # (artist, title)
+        self._rock_icy_song: tuple[str, str, float] | None = None
+        self._last_presence = ""
         self._last_switch = 0.0
         self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
         self._rock_task: asyncio.Task | None = None
@@ -74,6 +86,10 @@ class MusicBot(commands.Bot):
     async def setup_hook(self):
         self._http = aiohttp.ClientSession()
         await self.load_extension("cogs.music")
+
+        @self.tree.command(name="radio", description="Show the station and song playing now")
+        async def radio(interaction: discord.Interaction):
+            await interaction.response.send_message(embed=self._radio_embed())
 
         guild = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
         try:
@@ -190,11 +206,16 @@ class MusicBot(commands.Bot):
             root = ET.fromstring(await resp.text())
         for info in root:
             props = {p.get("name"): p.text for p in info}
-            return int(props["cue_time_start"]), int(props["cue_time_duration"])
+            return (
+                int(props["cue_time_start"]), int(props["cue_time_duration"]),
+                props.get("cue_title"), props.get("track_artist_name"),
+            )
         return None
 
-    async def _triton_in_break(self, mount: str) -> bool:
+    async def _triton_in_break(self, key: str, mount: str) -> bool:
         track, ad = await asyncio.gather(self._latest_cue(mount, "track"), self._latest_cue(mount, "ad"))
+        if track and track[2]:
+            self._now[key] = (_pretty(track[3]), _pretty(track[2]))
         if not ad:
             return False
         if track and track[0] >= ad[0]:
@@ -203,7 +224,7 @@ class MusicBot(commands.Bot):
 
     async def _station_in_break(self, st: dict) -> bool:
         if st["kind"] == "triton":
-            return await self._triton_in_break(st["mount"])
+            return await self._triton_in_break(st["key"], st["mount"])
         return await self._rock_in_break()
 
     def _rock_icy_event(self, meta: str):
@@ -214,6 +235,13 @@ class MusicBot(commands.Bot):
         if spot.group(1) == "T":
             self._rock_music_until = 0.0
             return
+        song = re.match(r"(?:StreamTitle=')?(.*?) - text=\"(.*?)\" song_spot=", meta)
+        if song:
+            self._rock_icy_song = (song.group(1), song.group(2), time.time())
+        else:
+            song = re.search(r'title="(.*?)",artist="(.*?)"', meta)
+            if song:
+                self._rock_icy_song = (song.group(2), song.group(1), time.time())
         length = re.search(r'length="(\d+):(\d+):(\d+)"', meta)
         if length:
             h, m, sec = map(int, length.groups())
@@ -260,9 +288,15 @@ class MusicBot(commands.Bot):
             tracks = (await resp.json())["data"]
         if not tracks:
             raise ValueError("empty track history")
+        latest = tracks[0]
+        song = (latest["artist"], latest["title"])
+        icy = self._rock_icy_song
+        if icy and icy[2] >= latest["startTime"] - 5:
+            song = (icy[0], icy[1])
+        self._now["rock"] = (_pretty(song[0]), _pretty(song[1]))
         if time.monotonic() < self._rock_music_until:
             return False
-        return time.time() > tracks[0]["endTime"] + ROCK_BREAK_GRACE_S
+        return time.time() > latest["endTime"] + ROCK_BREAK_GRACE_S
 
     @tasks.loop(seconds=5)
     async def _break_monitor(self):
@@ -281,6 +315,57 @@ class MusicBot(commands.Bot):
                 log.info("%s: %s", st["name"], "commercial" if res else "music")
             self._breaks[key] = res
         self._reevaluate()
+        await self._update_presence()
+
+    def _song_text(self, key: str) -> str:
+        song = self._now.get(key)
+        if not song:
+            return ""
+        artist, title = song
+        return f"{artist} – {title}" if artist else title
+
+    async def _update_presence(self):
+        """Show the playing station and song as the bot's 'Listening to' status."""
+        st = STATION_BY_KEY[self._current]
+        if self._breaks[self._current] is True:
+            text = f"Commercial break · {st['name']}"
+        else:
+            song = self._song_text(self._current)
+            text = f"{song} · {st['name']}" if song else st["name"]
+        text = text[:128]
+        if text == self._last_presence:
+            return
+        self._last_presence = text
+        log.info("Now playing: %s", text)
+        try:
+            await self.change_presence(
+                activity=discord.Activity(type=discord.ActivityType.listening, name=text)
+            )
+        except Exception as e:
+            log.warning("Could not update status: %s", e)
+
+    def _radio_embed(self) -> discord.Embed:
+        cur = STATION_BY_KEY[self._current]
+        song = self._song_text(self._current)
+        if self._breaks[self._current] is True:
+            now = "Commercial break"
+        else:
+            now = song or "Song info unavailable"
+        embed = discord.Embed(
+            title=f"📻 {cur['name']}", description=f"**{now}**", color=discord.Color.red()
+        )
+        for st in STATIONS:
+            state = self._breaks[st["key"]]
+            if state is True:
+                value = "📢 Commercial break"
+            elif state is False:
+                value = f"🎵 {self._song_text(st['key']) or 'Music'}"
+            else:
+                value = "❔ Status unavailable"
+            marker = "▶️ " if st["key"] == self._current else ""
+            embed.add_field(name=f"{marker}{st['name']}", value=value, inline=False)
+        embed.set_footer(text="Switches stations when the one playing hits a commercial")
+        return embed
 
     @_break_monitor.before_loop
     async def _before_break_monitor(self):
