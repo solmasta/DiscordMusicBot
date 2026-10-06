@@ -1,6 +1,9 @@
 import os
 import asyncio
 import logging
+import time
+import xml.etree.ElementTree as ET
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
@@ -23,6 +26,12 @@ RADIO_URL = os.getenv(
     "https://playerservices.streamtheworld.com/api/livestream-redirect/WKQXFM.mp3",
 )
 
+# Rock 95.5 (WCHI-FM Chicago, TuneIn s21577) plays while Q101 is in a commercial break
+BREAK_URL = os.getenv("BREAK_URL", "https://stream.revma.ihrhls.com/zc857")
+TRITON_MOUNT = "WKQXFM"
+TRITON_URL = "https://np.tritondigital.com/public/nowplaying?mountName={mount}&numberToFetch=1&eventType={event}"
+BREAK_GRACE_MS = 30_000
+
 FFMPEG_RADIO_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
@@ -34,8 +43,11 @@ class MusicBot(commands.Bot):
         intents = discord.Intents.default()
         intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents)
+        self._on_break = False
+        self._http: aiohttp.ClientSession | None = None
 
     async def setup_hook(self):
+        self._http = aiohttp.ClientSession()
         await self.load_extension("cogs.music")
 
         guild = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
@@ -66,7 +78,15 @@ class MusicBot(commands.Bot):
             )
         )
         if RADIO_URL and RADIO_CHANNEL_ID:
-            self._radio_keepalive.start()
+            if not self._radio_keepalive.is_running():
+                self._radio_keepalive.start()
+            if not self._break_monitor.is_running():
+                self._break_monitor.start()
+
+    async def close(self):
+        if self._http:
+            await self._http.close()
+        await super().close()
 
     async def on_voice_state_update(self, member, before, after):
         if RADIO_URL and RADIO_CHANNEL_ID:
@@ -89,9 +109,49 @@ class MusicBot(commands.Bot):
     def _start_playing(self, vc: discord.VoiceClient):
         if vc.is_playing() or vc.is_paused():
             vc.stop()
-        source = discord.FFmpegPCMAudio(RADIO_URL, **FFMPEG_RADIO_OPTIONS)
+        url = BREAK_URL if self._on_break else RADIO_URL
+        source = discord.FFmpegPCMAudio(url, **FFMPEG_RADIO_OPTIONS)
         vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None)
-        log.info("Radio: playing Q101 → %s", RADIO_URL)
+        log.info("Radio: playing %s → %s", "Rock 95.5 (commercial break)" if self._on_break else "Q101", url)
+
+    async def _latest_cue(self, event: str):
+        """Return (start_ms, duration_ms) of the newest Triton cue of this type, or None."""
+        url = TRITON_URL.format(mount=TRITON_MOUNT, event=event)
+        async with self._http.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            root = ET.fromstring(await resp.text())
+        for info in root:
+            props = {p.get("name"): p.text for p in info}
+            return int(props["cue_time_start"]), int(props["cue_time_duration"])
+        return None
+
+    async def _in_ad_break(self) -> bool:
+        track, ad = await asyncio.gather(self._latest_cue("track"), self._latest_cue("ad"))
+        if not ad:
+            return False
+        if track and track[0] >= ad[0]:
+            return False
+        return time.time() * 1000 < ad[0] + ad[1] + BREAK_GRACE_MS
+
+    @tasks.loop(seconds=5)
+    async def _break_monitor(self):
+        """Swap to Rock 95.5 during Q101 commercial breaks, back to Q101 when music resumes."""
+        try:
+            in_break = await self._in_ad_break()
+        except Exception as e:
+            log.warning("Break check failed: %s", e)
+            return
+        if in_break == self._on_break:
+            return
+        self._on_break = in_break
+        log.info("Break: %s", "commercial detected" if in_break else "music resumed")
+        channel = self.get_channel(int(RADIO_CHANNEL_ID))
+        vc = channel.guild.voice_client if channel else None
+        if vc and vc.is_connected():
+            self._start_playing(vc)
+
+    @_break_monitor.before_loop
+    async def _before_break_monitor(self):
+        await self.wait_until_ready()
 
     @tasks.loop(seconds=5)
     async def _radio_keepalive(self):
