@@ -70,6 +70,7 @@ FFMPEG_RADIO_OPTIONS = {
 
 
 BRANDING = os.getenv("BRANDING", "1") != "0"   # set the bot's icon and banner from assets/
+BOT_NAME = "Crüe FM"
 ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 NOW_PLAYING = os.getenv("NOW_PLAYING", "1") != "0"
 # Where the live Now Playing card lives: a text channel ID, or (default) the radio channel's own chat.
@@ -100,7 +101,7 @@ class JoinPrompt(discord.ui.View):
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(
             content="✅ Radio is back on for everyone. You can change it just for you any time: "
-                    "right-click **Crue FM** in the voice channel → **User Volume** or **Mute**.",
+                    "right-click **Crüe FM** in the voice channel → **User Volume** or **Mute**.",
             embed=None, view=None,
         )
         self.stop()
@@ -110,7 +111,7 @@ class JoinPrompt(discord.ui.View):
     async def dismiss(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(
             content="Okay — the radio is back on for everyone else. Discord doesn't let a bot mute "
-                    "itself for just one person, so to keep it off for you: right-click **Crue FM** "
+                    "itself for just one person, so to keep it off for you: right-click **Crüe FM** "
                     "in the voice channel → **Mute** (takes 2 seconds).",
             embed=None, view=None,
         )
@@ -202,7 +203,7 @@ class MusicBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.listening,
-                name="Crue FM 📻" if RADIO_URL else "/play to add music",
+                name="Crüe FM 📻" if RADIO_URL else "/play to add music",
             )
         )
         if RADIO_URL and RADIO_CHANNEL_ID:
@@ -238,18 +239,18 @@ class MusicBot(commands.Bot):
                 "🔇 I've muted the radio for a moment so it doesn't blast you. Talking isn't "
                 "affected.\n"
                 f"**Approve** → radio back on for everyone. **Dismiss** → back on for everyone "
-                f"else (then right-click **Crue FM** → **Mute** to keep it off just for you). "
+                f"else (then right-click **Crüe FM** → **Mute** to keep it off just for you). "
                 f"It also comes back on by itself in {MUTE_TIMEOUT_S} seconds."
             )
         else:
             body = (
                 f"**Now playing:** {now}\n\n"
-                "Too loud for you? **Right-click Crue FM** in the voice channel and drag "
+                "Too loud for you? **Right-click Crüe FM** in the voice channel and drag "
                 "**User Volume** down, or choose **Mute**. That only changes what *you* hear — "
                 "nobody else is affected."
             )
         return discord.Embed(
-            title=f"📻 Crue FM is playing in {channel_name}", description=body, color=discord.Color.red()
+            title=f"📻 Crüe FM is playing in {channel_name}", description=body, color=discord.Color.red()
         )
 
     def _effective_volume(self) -> float:
@@ -555,6 +556,12 @@ class MusicBot(commands.Bot):
         except discord.HTTPException as e:
             log.warning("Branding skipped (could not read the bot profile): %s", e)
             return
+        if self.user.name != BOT_NAME:
+            try:
+                await self.user.edit(username=BOT_NAME)
+                log.info("Bot name set to %s", BOT_NAME)
+            except discord.HTTPException as e:
+                log.warning("Could not rename the bot to %s: %s", BOT_NAME, e)
         jobs = (
             ("avatar", "icon.png", user.avatar, 512, (48, 48)),
             ("banner", "banner.png", user.banner, 1024, (68, 24)),
@@ -627,7 +634,7 @@ class MusicBot(commands.Bot):
     async def _find_card(self, channel) -> discord.Message | None:
         """After a restart, reuse the card we already posted instead of adding a new one."""
         async for m in channel.history(limit=30):
-            if m.author.id == self.user.id and m.embeds and (m.embeds[0].footer.text or "").startswith("Crue FM"):
+            if m.author.id == self.user.id and m.embeds and (m.embeds[0].footer.text or "").startswith(("Crüe FM", "Crue FM")):
                 return m
         return None
 
@@ -667,7 +674,7 @@ class MusicBot(commands.Bot):
             timestamp=discord.utils.utcnow(),
         )
         embed.set_image(url="attachment://nowplaying.gif")
-        embed.set_footer(text="Crue FM · live")
+        embed.set_footer(text="Crüe FM · live")
 
         def new_file():
             return discord.File(io.BytesIO(gif), filename="nowplaying.gif")

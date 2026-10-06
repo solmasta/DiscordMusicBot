@@ -93,7 +93,7 @@ def make_icon(path: str):
     base.alpha_composite(bars)
 
     # sized to sit inside the red ring so Discord's circular crop never clips the lettering
-    mark = wordmark([("CRUE ", (255, 255, 255, 255)), ("FM", EMBER + (255,))], 158)
+    mark = wordmark([("CRÜE ", (255, 255, 255, 255)), ("FM", EMBER + (255,))], 158)
     shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     mx, my = (S - mark.width) // 2, 700
     sh = Image.new("RGBA", mark.size, (0, 0, 0, 0))
@@ -141,7 +141,7 @@ def make_banner(path: str):
     base.alpha_composite(bars)
 
     # wordmark + tagline, centred
-    mark = wordmark([("CRUE ", (255, 255, 255, 255)), ("FM", EMBER + (255,))], 250 * SS // 2 * 1)
+    mark = wordmark([("CRÜE ", (255, 255, 255, 255)), ("FM", EMBER + (255,))], 250 * SS // 2 * 1)
     mark = mark.resize((int(mark.width * 0.98), int(mark.height * 0.98)), Image.LANCZOS)
     mx, my = (w - mark.width) // 2, int(h * 0.15)
     halo = Image.new("RGBA", (w, h), (0, 0, 0, 0))
