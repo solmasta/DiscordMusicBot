@@ -1,4 +1,5 @@
 import asyncio
+import os
 import logging
 import re
 from collections import deque
@@ -111,6 +112,14 @@ class Music(commands.Cog):
 
     def cog_unload(self):
         self._reconnect_task.cancel()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """The music commands are for the home server only (public servers use /stations)."""
+        home = os.getenv("GUILD_ID")
+        if home and str(interaction.guild_id) != home:
+            await interaction.response.send_message("That command isn't available here. Try `/stations browse`.", ephemeral=True)
+            return False
+        return True
 
     def _get_state(self, guild_id: int) -> GuildState:
         if guild_id not in self._states:

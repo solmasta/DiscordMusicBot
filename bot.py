@@ -12,7 +12,9 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
+import directory as dirmod
 import visuals
+from publicradio import PublicRadio
 
 load_dotenv()
 
@@ -150,6 +152,8 @@ class MusicBot(commands.Bot):
         self._last_presence = ""
         self.radio_volume = float(os.getenv("RADIO_VOLUME", "1.0"))  # master level, set by /volume
         self._prompted: dict[int, float] = {}  # user id -> last time they got the join prompt
+        self.directory = dirmod.Directory()   # searchable US station list for /stations
+        self.public = PublicRadio(self)       # radio players for servers other than the home server
         self._branding_done = False
         self._tap: visuals.SpectrumTap | None = None
         self._song_span: dict[str, tuple[float, float] | None] = {st["key"]: None for st in STATIONS}
@@ -166,37 +170,48 @@ class MusicBot(commands.Bot):
 
     async def setup_hook(self):
         self._http = aiohttp.ClientSession()
+        self.directory.session = self._http
         await self.load_extension("cogs.music")
+        await self.load_extension("cogs.stations")
 
         @self.tree.command(name="radio", description="Show the station and song playing now")
+        @discord.app_commands.guild_only()
         async def radio(interaction: discord.Interaction):
+            if GUILD_ID and str(interaction.guild_id) != GUILD_ID:
+                player = self.public.players.get(interaction.guild_id)
+                if not player:
+                    await interaction.response.send_message(
+                        "Nothing is playing here yet. Use `/stations browse` to find a station from your area.", ephemeral=True)
+                    return
+                from cogs.stations import station_embed
+                await interaction.response.send_message(embed=station_embed(player.station, "Now playing"))
+                return
             await interaction.response.send_message(embed=self._radio_embed())
 
-        guild = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
+        home = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
+        if home:
+            # The music commands (/play and friends) are for the home server only; everything else is global.
+            music = self.get_cog("Music")
+            for cmd in (music.get_app_commands() if music else []):
+                self.tree.remove_command(cmd.name)
+                self.tree.add_command(cmd, guild=home)
         try:
-            if guild:
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-                log.info("Slash commands synced to guild %s", GUILD_ID)
-                # Earlier runs registered these globally too; clear them so commands don't show twice.
-                try:
-                    self.tree.clear_commands(guild=None)
-                    await self.tree.sync()
-                    log.info("Cleared duplicate global slash commands")
-                except Exception as e:
-                    log.warning("Could not clear global slash commands (non-fatal): %s", e)
-            else:
-                await self.tree.sync()
-                log.info("Slash commands synced globally (may take up to 1 hour)")
-        except discord.Forbidden:
-            log.warning("Guild sync forbidden (Missing Access) — falling back to global sync")
-            try:
-                await self.tree.sync()
-                log.info("Slash commands synced globally")
-            except Exception as e:
-                log.warning("Global slash command sync failed (non-fatal): %s", e)
+            if home:
+                await self.tree.sync(guild=home)
+            await self.tree.sync()
+            log.info("Slash commands synced (home server + global)")
         except Exception as e:
             log.warning("Slash command sync failed (non-fatal): %s", e)
+
+    @tasks.loop(hours=1)
+    async def _directory_loop(self):
+        before = self.directory.loaded_at
+        try:
+            n = await self.directory.refresh()
+            if self.directory.loaded_at != before:
+                log.info("Station directory loaded: %d stations in %d states", n, len(self.directory.states()))
+        except Exception as e:
+            log.warning("Station directory refresh failed: %s", e)
 
     async def on_ready(self):
         log.info("Logged in as %s (ID: %s)", self.user, self.user.id)
@@ -215,11 +230,16 @@ class MusicBot(commands.Bot):
                 self._rock_task = asyncio.create_task(self._rock_icy_loop())
             if NOW_PLAYING and NOW_PLAYING_CHANNEL_ID and not self._card_loop.is_running():
                 self._card_loop.start()
+        if not self._directory_loop.is_running():
+            self._directory_loop.start()
+        if not self.public.monitor.is_running():
+            self.public.monitor.start()
         if BRANDING and not self._branding_done:
             self._branding_done = True
             asyncio.create_task(self._apply_branding())
 
     async def close(self):
+        await self.public.shutdown()
         if self._rock_task:
             self._rock_task.cancel()
         if self._http:
