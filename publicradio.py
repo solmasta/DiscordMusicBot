@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 import discord
 from discord.ext import tasks
 
+from store import SavedRadio, Store
+
 log = logging.getLogger("public")
 
 # Simultaneous servers. Each stream costs roughly 4-5% of a core (decoding + loudness leveling), and
@@ -20,6 +22,8 @@ MAX_STREAMS = int(os.getenv("MAX_PUBLIC_STREAMS", "3"))
 IDLE_LEAVE_S = int(os.getenv("IDLE_LEAVE_SECONDS", "300"))     # leave after this long with no listeners
 RESTART_LIMIT, RESTART_WINDOW_S = 4, 120                       # give up if a stream keeps dying
 DEFAULT_VOLUME = float(os.getenv("PUBLIC_DEFAULT_VOLUME", "0.8"))
+RESUME_GAP_S = 1    # pause between servers when resuming, to be gentle on Discord's voice servers
+LOST_GRACE_S = 30   # how long a voice connection may stay down (Discord reconnects) before we give up
 START_WAIT_S = 12   # how long a new station gets to produce audio before we call it dead
 
 # Stations are third-party URLs, so ffmpeg is restricted to plain web protocols (no file:, no
@@ -105,15 +109,63 @@ class PublicPlayer:
     started_at: float = field(default_factory=time.time)
     ended: bool = False
     started: bool = False
+    lost_since: float | None = None
     idle_since: float | None = None
     restarts: list = field(default_factory=list)
 
 
 class PublicRadio:
-    def __init__(self, bot):
+    def __init__(self, bot, store: Store | None = None):
         self.bot = bot
+        self.store = store or Store()
         self.players: dict[int, PublicPlayer] = {}
         self._cooldown: dict[int, float] = {}
+        self._saved: dict[int, SavedRadio] = {}     # what is stored, so joins don't need a database read
+        self._resuming: set[int] = set()
+        self._resumed = False
+        self._tasks: set[asyncio.Task] = set()
+
+    # ---- saved settings
+    async def start(self):
+        """Open the settings store and load what each server had playing. Never blocks the radio:
+        if storage fails, everything still works, it just isn't remembered."""
+        try:
+            await self.store.open()
+            self._saved = {row.guild_id: row for row in await self.store.all()}
+            log.info("Loaded saved radio settings for %d server(s)", len(self._saved))
+        except Exception as e:
+            log.error("Saved settings are unavailable (%s); the radio will work but won't be remembered", e)
+
+    def _spawn(self, coro):
+        task = asyncio.get_running_loop().create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _persist(self, player: PublicPlayer):
+        saved = SavedRadio(player.guild_id, player.station, player.url, player.channel_id,
+                           player.text_channel_id, player.started_by, player.volume)
+        self._saved[player.guild_id] = saved
+        try:
+            await self.store.save(saved)
+        except Exception as e:
+            log.warning("Could not save radio settings for server %s: %s", player.guild_id, e)
+
+    async def _save_volume(self, guild_id: int, volume: float):
+        row = self._saved.get(guild_id)
+        if row:
+            row.volume = volume
+        try:
+            await self.store.update_volume(guild_id, volume)
+        except Exception as e:
+            log.warning("Could not save the volume for server %s: %s", guild_id, e)
+
+    async def forget(self, guild_id: int):
+        """Drop a server's saved radio (it was stopped on purpose, the bot was removed, or it can't resume)."""
+        self._saved.pop(guild_id, None)
+        try:
+            await self.store.delete(guild_id)
+        except Exception as e:
+            log.warning("Could not delete saved settings for server %s: %s", guild_id, e)
 
     # ---- permissions
     def may_control(self, member: discord.Member, player: PublicPlayer | None) -> bool:
@@ -136,6 +188,8 @@ class PublicRadio:
         voice = member.voice.channel if member.voice else None
         if voice is None:
             return False, "Join a voice channel first, then pick a station."
+        if isinstance(voice, discord.StageChannel):
+            return False, "I can't play in Stage channels yet. Please use a regular voice channel."
         now = time.monotonic()
         if now - self._cooldown.get(member.id, 0) < 4:
             return False, "Easy there, give it a few seconds before changing again."
@@ -176,6 +230,7 @@ class PublicRadio:
             await self.stop(guild, "station not responding")
             return False, f"**{station.name}** isn't responding right now. Please try another station."
         log.info("Tuned %s to %s (%s)", guild.name, station.name, station.place)
+        await self._persist(player)
         return True, f"Now playing **{station.name}**"
 
     @staticmethod
@@ -214,9 +269,14 @@ class PublicRadio:
         vc = guild.voice_client if guild else None
         if vc and isinstance(vc.source, discord.PCMVolumeTransformer):
             vc.source.volume = volume
+        self._spawn(self._save_volume(guild_id, volume))
 
-    async def stop(self, guild: discord.Guild, reason: str = "stopped"):
+    async def stop(self, guild: discord.Guild, reason: str = "stopped", forget: bool = True):
+        """Stop and leave. By default the saved settings are dropped too, so a stopped radio stays
+        stopped; a restart passes forget=False so the radio comes back."""
         self.players.pop(guild.id, None)
+        if forget:
+            await self.forget(guild.id)
         vc = guild.voice_client
         if vc:
             try:
@@ -230,7 +290,87 @@ class PublicRadio:
         for gid in list(self.players):
             guild = self.bot.get_guild(gid)
             if guild:
-                await self.stop(guild, "shutting down")
+                await self.stop(guild, "shutting down", forget=False)
+
+    # ---- resuming after a restart
+    async def resume_all(self):
+        """Pick each server's radio back up where it left off. Servers whose channel is empty wait
+        until someone joins (see on_join) rather than the bot sitting alone in a channel."""
+        if self._resumed:
+            return
+        self._resumed = True
+        for saved in list(self._saved.values()):
+            try:
+                await self._resume(saved)
+            except Exception as e:
+                log.warning("Could not resume server %s: %s", saved.guild_id, e)
+            await asyncio.sleep(RESUME_GAP_S)
+
+    async def on_join(self, member: discord.Member, channel: discord.VoiceChannel):
+        saved = self._saved.get(channel.guild.id)
+        if saved and saved.voice_channel_id == channel.id and channel.guild.id not in self.players:
+            await self._resume(saved)
+
+    async def _resume(self, saved: SavedRadio) -> bool:
+        gid = saved.guild_id
+        if gid in self.players or gid in self._resuming:
+            return gid in self.players
+        self._resuming.add(gid)
+        try:
+            return await self._resume_inner(saved)
+        finally:
+            self._resuming.discard(gid)
+
+    async def _resume_inner(self, saved: SavedRadio) -> bool:
+        gid = saved.guild_id
+        guild = self.bot.get_guild(gid)
+        if guild is None:
+            if self.bot.is_ready():
+                await self.forget(gid)        # the bot is no longer in that server
+            return False
+        channel = guild.get_channel(saved.voice_channel_id)
+        if not isinstance(channel, discord.VoiceChannel):
+            await self.forget(gid)            # the channel was deleted
+            return False
+        if len(self.players) >= MAX_STREAMS:
+            log.info("Not resuming %s yet: at the %d-server limit", guild.name, MAX_STREAMS)
+            return False
+        if not listener_ids(channel, guild.me.id):
+            return False                      # nobody there; resume when someone joins
+        perms = channel.permissions_for(guild.me)
+        if not (perms.connect and perms.speak):
+            log.info("Not resuming %s: missing Connect/Speak in the saved channel", guild.name)
+            return False
+        if await check_stream_url(saved.url):
+            await self.forget(gid)
+            return False
+        vc = guild.voice_client
+        try:
+            if vc is None or not vc.is_connected():
+                vc = await channel.connect(timeout=15, self_deaf=True)
+            elif vc.channel != channel:
+                await vc.move_to(channel)
+        except (asyncio.TimeoutError, discord.ClientException, discord.HTTPException) as e:
+            log.warning("Could not rejoin %s to resume: %s", guild.name, e)
+            return False
+        player = PublicPlayer(gid, channel.id, saved.text_channel_id, saved.station, saved.url,
+                              saved.started_by, volume=saved.volume)
+        self.players[gid] = player
+        self._play(vc, player)
+        if not await self._wait_started(player):
+            fresh = await self.bot.directory.resolve_url(saved.station)   # the station may have moved its stream
+            if fresh != saved.url and not await check_stream_url(fresh):
+                player.url = fresh
+                self._play(vc, player)
+                if await self._wait_started(player):
+                    await self._persist(player)
+                    log.info("Resumed %s with %s (new stream address)", guild.name, saved.station.name)
+                    return True
+            await self.stop(guild, "could not resume")
+            await self._notify(player, f"⚠️ I couldn't resume **{saved.station.name}** after restarting. Use `/stations browse` to pick a station.")
+            return False
+        log.info("Resumed %s with %s", guild.name, saved.station.name)
+        return True
 
     # ---- upkeep
     async def _notify(self, player: PublicPlayer, text: str):
@@ -247,9 +387,17 @@ class PublicRadio:
         for gid, player in list(self.players.items()):
             guild = self.bot.get_guild(gid)
             vc = guild.voice_client if guild else None
-            if guild is None or vc is None or not vc.is_connected():
-                self.players.pop(gid, None)   # kicked, disconnected, or removed from the server
+            if guild is None or vc is None:
+                self.players.pop(gid, None)   # kicked from voice, or removed from the server: stay stopped
+                await self.forget(gid)
                 continue
+            if not vc.is_connected():
+                # Discord reconnects voice on its own after a blip; only give up if it stays down.
+                player.lost_since = player.lost_since or now
+                if now - player.lost_since >= LOST_GRACE_S:
+                    await self.stop(guild, "voice connection lost")
+                continue
+            player.lost_since = None
             humans = listener_ids(vc.channel, guild.me.id)
             if not humans:
                 player.idle_since = player.idle_since or now

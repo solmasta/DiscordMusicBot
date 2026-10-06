@@ -171,6 +171,7 @@ class MusicBot(commands.Bot):
     async def setup_hook(self):
         self._http = aiohttp.ClientSession()
         self.directory.session = self._http
+        await self.public.start()
         await self.load_extension("cogs.music")
         await self.load_extension("cogs.stations")
 
@@ -234,12 +235,18 @@ class MusicBot(commands.Bot):
             self._directory_loop.start()
         if not self.public.monitor.is_running():
             self.public.monitor.start()
+        asyncio.create_task(self.public.resume_all())
         if BRANDING and not self._branding_done:
             self._branding_done = True
             asyncio.create_task(self._apply_branding())
 
+    async def on_guild_remove(self, guild: discord.Guild):
+        await self.public.forget(guild.id)   # the bot was removed: drop that server's saved settings
+        self.public.players.pop(guild.id, None)
+
     async def close(self):
         await self.public.shutdown()
+        await self.public.store.close()
         if self._rock_task:
             self._rock_task.cancel()
         if self._http:
@@ -326,6 +333,11 @@ class MusicBot(commands.Bot):
             await self._release(member, "prompt could not be delivered")
 
     async def on_voice_state_update(self, member, before, after):
+        if (
+            not member.bot and after.channel and (before.channel is None or before.channel.id != after.channel.id)
+            and (not GUILD_ID or str(member.guild.id) != GUILD_ID)
+        ):
+            asyncio.create_task(self.public.on_join(member, after.channel))   # resume a saved station when people return
         if RADIO_URL and RADIO_CHANNEL_ID:
             radio_id = int(RADIO_CHANNEL_ID)
             if (

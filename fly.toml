@@ -22,3 +22,9 @@ RADIO_CHANNEL_ID = "985413944514600970"
 [[vm]]
   size = "shared-cpu-1x"
   memory = "1gb"
+
+# Saved per-server radio settings live on a persistent volume (create it once with:
+#   fly volumes create crue_data --size 1 --region ord --app discordmusicbot-k-zztq)
+[mounts]
+  source = "crue_data"
+  destination = "/data"
