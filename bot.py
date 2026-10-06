@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import re
 import time
 import xml.etree.ElementTree as ET
 import aiohttp
@@ -33,6 +32,11 @@ ROCK_URL = os.getenv("ROCK_URL", "https://stream.revma.ihrhls.com/zc857")
 TRITON_MOUNT = "WKQXFM"
 TRITON_URL = "https://np.tritondigital.com/public/nowplaying?mountName={mount}&numberToFetch=1&eventType={event}"
 Q101_BREAK_GRACE_MS = 30_000
+# iHeart's track history gives start/end times per song. Normal song-to-song gaps are 3-12s;
+# commercial breaks run 4+ minutes, so a gap longer than this means a break.
+IHEART_URL = "https://us.api.iheart.com/api/v3/live-meta/stream/{stream}/trackHistory?limit=1"
+ROCK_STREAM_ID = os.getenv("ROCK_STREAM_ID", "857")
+ROCK_BREAK_GRACE_S = 15
 MIN_SWITCH_SECONDS = 10
 
 FFMPEG_RADIO_OPTIONS = {
@@ -49,9 +53,8 @@ class MusicBot(commands.Bot):
         self._http: aiohttp.ClientSession | None = None
         self._current = "q101"          # station being played: "q101" or "rock"
         self._q_break = False           # Q101 is in a commercial break
-        self._r_break: bool | None = None  # Rock 95.5 break state; None = unknown / reader down
+        self._r_break: bool | None = None  # Rock 95.5 break state; None = unknown (API down)
         self._last_switch = 0.0
-        self._rock_task: asyncio.Task | None = None
 
     async def setup_hook(self):
         self._http = aiohttp.ClientSession()
@@ -89,12 +92,8 @@ class MusicBot(commands.Bot):
                 self._radio_keepalive.start()
             if not self._break_monitor.is_running():
                 self._break_monitor.start()
-            if self._rock_task is None or self._rock_task.done():
-                self._rock_task = asyncio.create_task(self._rock_reader())
 
     async def close(self):
-        if self._rock_task:
-            self._rock_task.cancel()
         if self._http:
             await self._http.close()
         await super().close()
@@ -173,62 +172,37 @@ class MusicBot(commands.Bot):
             return False
         return time.time() * 1000 < ad[0] + ad[1] + Q101_BREAK_GRACE_MS
 
+    async def _rock_in_break(self) -> bool:
+        url = IHEART_URL.format(stream=ROCK_STREAM_ID)
+        async with self._http.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            tracks = (await resp.json())["data"]
+        if not tracks:
+            raise ValueError("empty track history")
+        return time.time() > tracks[0]["endTime"] + ROCK_BREAK_GRACE_S
+
     @tasks.loop(seconds=5)
     async def _break_monitor(self):
-        """Refresh Q101's commercial state and re-check whether to swap stations."""
-        try:
-            self._q_break = await self._q101_in_break()
-        except Exception as e:
-            log.warning("Q101 break check failed: %s", e)
-            return
+        """Refresh both stations' commercial state and re-check whether to swap."""
+        q, r = await asyncio.gather(self._q101_in_break(), self._rock_in_break(), return_exceptions=True)
+        if isinstance(q, Exception):
+            log.warning("Q101 break check failed: %s", q)
+        else:
+            if q != self._q_break:
+                log.info("Q101: %s", "commercial" if q else "music")
+            self._q_break = q
+        if isinstance(r, Exception):
+            if self._r_break is not None:
+                log.warning("Rock 95.5 break check failed: %s", r)
+            self._r_break = None
+        else:
+            if r != self._r_break:
+                log.info("Rock 95.5: %s", "commercial" if r else "music")
+            self._r_break = r
         self._reevaluate()
 
     @_break_monitor.before_loop
     async def _before_break_monitor(self):
         await self.wait_until_ready()
-
-    @staticmethod
-    def _rock_meta_is_ad(meta: str):
-        """iHeart ICY metadata: song_spot T = commercial, M/F = music. None if it says nothing."""
-        m = re.search(r'song_spot="(\w)"', meta)
-        if m:
-            return m.group(1) == "T"
-        if "Spot Block End" in meta:
-            return False
-        return None
-
-    async def _read_rock_once(self):
-        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
-        headers = {"Icy-MetaData": "1", "User-Agent": "Mozilla/5.0"}
-        async with self._http.get(ROCK_URL, headers=headers, timeout=timeout) as resp:
-            metaint = int(resp.headers.get("icy-metaint", 0))
-            if not metaint:
-                raise RuntimeError("Rock 95.5 stream has no ICY metadata")
-            log.info("Rock 95.5 metadata reader connected")
-            while True:
-                await resp.content.readexactly(metaint)
-                length = (await resp.content.readexactly(1))[0] * 16
-                if not length:
-                    continue
-                meta = (await resp.content.readexactly(length)).decode("utf-8", "ignore")
-                is_ad = self._rock_meta_is_ad(meta)
-                if is_ad is not None and is_ad != self._r_break:
-                    self._r_break = is_ad
-                    log.info("Rock 95.5: %s", "commercial" if is_ad else "music")
-                    self._reevaluate()
-
-    async def _rock_reader(self):
-        """Keep one metadata connection open to Rock 95.5 so its break state is always current."""
-        while True:
-            try:
-                await self._read_rock_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                log.warning("Rock 95.5 metadata reader error: %s", e)
-            self._r_break = None
-            self._reevaluate()
-            await asyncio.sleep(5)
 
     @tasks.loop(seconds=5)
     async def _radio_keepalive(self):
