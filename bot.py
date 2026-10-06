@@ -27,18 +27,30 @@ RADIO_URL = os.getenv(
     "https://playerservices.streamtheworld.com/api/livestream-redirect/WKQXFM.mp3",
 )
 
-# Rock 95.5 (WCHI-FM Chicago, TuneIn s21577) is the second station. Whichever station is on
-# keeps playing until it hits a commercial break, then the bot swaps to the other one.
 ROCK_URL = os.getenv("ROCK_URL", "https://stream.revma.ihrhls.com/zc857")
-TRITON_MOUNT = "WKQXFM"
+DRIVE_MOUNT = os.getenv("DRIVE_MOUNT", "WDRVFM")
 TRITON_URL = "https://np.tritondigital.com/public/nowplaying?mountName={mount}&numberToFetch=1&eventType={event}"
-Q101_BREAK_GRACE_MS = 30_000
+TRITON_BREAK_GRACE_MS = 30_000
 # iHeart's track history gives start/end times per song. Normal song-to-song gaps are 3-12s;
 # commercial breaks run 4+ minutes, so a gap longer than this means a break.
 IHEART_URL = "https://us.api.iheart.com/api/v3/live-meta/stream/{stream}/trackHistory?limit=1"
 ROCK_STREAM_ID = os.getenv("ROCK_STREAM_ID", "857")
 ROCK_BREAK_GRACE_S = 15
 MIN_SWITCH_SECONDS = 10
+FAILS_BEFORE_UNKNOWN = 3
+
+# Rotation order. The station that's on keeps playing until it hits a commercial break, then the
+# bot moves to the next station in this list that is on music (wrapping around).
+#   triton = streamtheworld stations (Triton now-playing ad cues); iheart = Rock 95.5.
+STATIONS = [
+    {"key": "q101", "name": "Q101", "url": RADIO_URL, "kind": "triton", "mount": "WKQXFM"},
+    {"key": "rock", "name": "Rock 95.5", "url": ROCK_URL, "kind": "iheart"},
+    {
+        "key": "drive", "name": "97.1 The Drive", "kind": "triton", "mount": DRIVE_MOUNT,
+        "url": f"https://playerservices.streamtheworld.com/api/livestream-redirect/{DRIVE_MOUNT}.mp3",
+    },
+]
+STATION_BY_KEY = {st["key"]: st for st in STATIONS}
 
 FFMPEG_RADIO_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -52,9 +64,9 @@ class MusicBot(commands.Bot):
         intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents)
         self._http: aiohttp.ClientSession | None = None
-        self._current = "q101"          # station being played: "q101" or "rock"
-        self._q_break = False           # Q101 is in a commercial break
-        self._r_break: bool | None = None  # Rock 95.5 break state; None = unknown (API down)
+        self._current = STATIONS[0]["key"]
+        self._breaks: dict[str, bool | None] = {st["key"]: None for st in STATIONS}  # None = unknown
+        self._fails = {st["key"]: 0 for st in STATIONS}
         self._last_switch = 0.0
         self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
         self._rock_task: asyncio.Task | None = None
@@ -126,33 +138,36 @@ class MusicBot(commands.Bot):
     def _start_playing(self, vc: discord.VoiceClient):
         if vc.is_playing() or vc.is_paused():
             vc.stop()
-        url = ROCK_URL if self._current == "rock" else RADIO_URL
-        source = discord.FFmpegPCMAudio(url, **FFMPEG_RADIO_OPTIONS)
+        st = STATION_BY_KEY[self._current]
+        source = discord.FFmpegPCMAudio(st["url"], **FFMPEG_RADIO_OPTIONS)
         vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None)
-        log.info("Radio: playing %s → %s", "Rock 95.5" if self._current == "rock" else "Q101", url)
+        log.info("Radio: playing %s → %s", st["name"], st["url"])
 
     def _reevaluate(self):
-        """Swap stations when the one that's playing hits a commercial and the other is on music."""
-        target = self._current
-        if self._current == "q101":
-            if self._q_break and self._r_break is False:
-                target = "rock"
-        else:
-            if self._r_break is None:
-                target = "q101"
-            elif self._r_break and not self._q_break:
-                target = "q101"
-        if target == self._current:
+        """If the playing station is in a commercial break, move to the next one that's on music."""
+        keys = [st["key"] for st in STATIONS]
+        cur = self._current
+        state = self._breaks[cur]
+        target = cur
+        if state is True:
+            i = keys.index(cur)
+            for k in keys[i + 1:] + keys[:i]:
+                if self._breaks[k] is False:
+                    target = k
+                    break
+        elif state is None and cur != keys[0]:
+            good = [k for k in keys if self._breaks[k] is False]
+            target = good[0] if good else keys[0]
+        if target == cur:
             return
         if time.monotonic() - self._last_switch < MIN_SWITCH_SECONDS:
             return
-        if self._current == "rock" and self._r_break is None:
-            log.info("Rock 95.5 metadata unavailable — switching back to Q101")
+        if state is None:
+            log.info("%s status unavailable — switching to %s", STATION_BY_KEY[cur]["name"], STATION_BY_KEY[target]["name"])
         else:
             log.info(
                 "Break: %s hit a commercial — switching to %s",
-                "Q101" if self._current == "q101" else "Rock 95.5",
-                "Rock 95.5" if target == "rock" else "Q101",
+                STATION_BY_KEY[cur]["name"], STATION_BY_KEY[target]["name"],
             )
         self._current = target
         self._last_switch = time.monotonic()
@@ -161,9 +176,9 @@ class MusicBot(commands.Bot):
         if vc and vc.is_connected():
             self._start_playing(vc)
 
-    async def _latest_cue(self, event: str):
+    async def _latest_cue(self, mount: str, event: str):
         """Return (start_ms, duration_ms) of the newest Triton cue of this type, or None."""
-        url = TRITON_URL.format(mount=TRITON_MOUNT, event=event)
+        url = TRITON_URL.format(mount=mount, event=event)
         async with self._http.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
             root = ET.fromstring(await resp.text())
         for info in root:
@@ -171,13 +186,18 @@ class MusicBot(commands.Bot):
             return int(props["cue_time_start"]), int(props["cue_time_duration"])
         return None
 
-    async def _q101_in_break(self) -> bool:
-        track, ad = await asyncio.gather(self._latest_cue("track"), self._latest_cue("ad"))
+    async def _triton_in_break(self, mount: str) -> bool:
+        track, ad = await asyncio.gather(self._latest_cue(mount, "track"), self._latest_cue(mount, "ad"))
         if not ad:
             return False
         if track and track[0] >= ad[0]:
             return False
-        return time.time() * 1000 < ad[0] + ad[1] + Q101_BREAK_GRACE_MS
+        return time.time() * 1000 < ad[0] + ad[1] + TRITON_BREAK_GRACE_MS
+
+    async def _station_in_break(self, st: dict) -> bool:
+        if st["kind"] == "triton":
+            return await self._triton_in_break(st["mount"])
+        return await self._rock_in_break()
 
     def _rock_icy_event(self, meta: str):
         """Fast signal: iHeart tags songs song_spot M/F (with a length) and commercials/sweepers T."""
@@ -239,22 +259,20 @@ class MusicBot(commands.Bot):
 
     @tasks.loop(seconds=5)
     async def _break_monitor(self):
-        """Refresh both stations' commercial state and re-check whether to swap."""
-        q, r = await asyncio.gather(self._q101_in_break(), self._rock_in_break(), return_exceptions=True)
-        if isinstance(q, Exception):
-            log.warning("Q101 break check failed: %s", q)
-        else:
-            if q != self._q_break:
-                log.info("Q101: %s", "commercial" if q else "music")
-            self._q_break = q
-        if isinstance(r, Exception):
-            if self._r_break is not None:
-                log.warning("Rock 95.5 break check failed: %s", r)
-            self._r_break = None
-        else:
-            if r != self._r_break:
-                log.info("Rock 95.5: %s", "commercial" if r else "music")
-            self._r_break = r
+        """Refresh every station's commercial state, then re-check whether to move."""
+        results = await asyncio.gather(*(self._station_in_break(st) for st in STATIONS), return_exceptions=True)
+        for st, res in zip(STATIONS, results):
+            key = st["key"]
+            if isinstance(res, Exception):
+                self._fails[key] += 1
+                if self._fails[key] == FAILS_BEFORE_UNKNOWN:
+                    log.warning("%s break check failing (%s) — treating as unknown", st["name"], res)
+                    self._breaks[key] = None
+                continue
+            self._fails[key] = 0
+            if res != self._breaks[key]:
+                log.info("%s: %s", st["name"], "commercial" if res else "music")
+            self._breaks[key] = res
         self._reevaluate()
 
     @_break_monitor.before_loop
@@ -263,7 +281,7 @@ class MusicBot(commands.Bot):
 
     @tasks.loop(seconds=5)
     async def _radio_keepalive(self):
-        """Keep Q101 playing 24/7."""
+        """Keep the radio connected and playing 24/7."""
         channel = self.get_channel(int(RADIO_CHANNEL_ID))
         if not channel or not isinstance(channel, discord.VoiceChannel):
             log.warning("RADIO_CHANNEL_ID %s not found or not a voice channel", RADIO_CHANNEL_ID)
