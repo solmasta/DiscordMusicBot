@@ -21,7 +21,9 @@ log = logging.getLogger("public")
 MAX_STREAMS = int(os.getenv("MAX_PUBLIC_STREAMS", "3"))
 IDLE_LEAVE_S = int(os.getenv("IDLE_LEAVE_SECONDS", "300"))     # leave after this long with no listeners
 RESTART_LIMIT, RESTART_WINDOW_S = 4, 120                       # give up if a stream keeps dying
-DEFAULT_VOLUME = float(os.getenv("PUBLIC_DEFAULT_VOLUME", "0.8"))
+# New servers start quiet; each listener can raise it for themselves (right-click the bot > User Volume,
+# up to 200%), and /stations volume sets it for everyone. Stations are already leveled to about -20 LUFS.
+DEFAULT_VOLUME = float(os.getenv("PUBLIC_DEFAULT_VOLUME", "0.4"))
 RESUME_GAP_S = 1    # pause between servers when resuming, to be gentle on Discord's voice servers
 LOST_GRACE_S = 30   # how long a voice connection may stay down (Discord reconnects) before we give up
 START_WAIT_S = 12   # how long a new station gets to produce audio before we call it dead

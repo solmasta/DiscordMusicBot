@@ -290,11 +290,16 @@ class GuidedPicker(discord.ui.View):
             self.saved_area = (self.state, self.city)
         embed = station_embed(station, "Now playing")
         embed.set_author(name=f"Tuned by {interaction.user.display_name}")
+        player = self.cog.bot.public.players.get(interaction.guild_id)
+        tip = ""
+        if player is not None and getattr(player, "volume", 1) <= 0.5:
+            tip = (f"\n🔈 Volume starts low ({round(player.volume * 100)}%). To raise it just for you, right-click the bot "
+                   "in the voice channel → **User Volume**; for everyone use `/stations volume`.")
         try:
             await interaction.channel.send(embed=embed)
-            await interaction.followup.send("✅ Tuned in! Use `/stations stop` to stop.", ephemeral=True)
+            await interaction.followup.send("✅ Tuned in! Use `/stations stop` to stop." + tip, ephemeral=True)
         except (discord.HTTPException, AttributeError):
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(content=tip.strip() or None, embed=embed, ephemeral=True)
 
 
 class PanelView(discord.ui.View):

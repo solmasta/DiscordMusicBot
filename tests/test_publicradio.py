@@ -123,6 +123,12 @@ class StreamUrlSafety(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("file", P.FFMPEG_BEFORE.split("-protocol_whitelist")[1].split()[0])
 
 
+class Defaults(unittest.TestCase):
+    def test_new_servers_start_quiet(self):
+        self.assertLessEqual(P.DEFAULT_VOLUME, 0.5, "listeners raise it for themselves; it must never start loud")
+        self.assertGreater(P.DEFAULT_VOLUME, 0.1, "but not so low it sounds broken")
+
+
 class Control(unittest.TestCase):
     def setUp(self):
         self.g = make_guild()

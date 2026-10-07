@@ -280,6 +280,19 @@ class Playing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(v.saved_area, ("IL", "Chicago"))
         self.assertEqual(v.screen, "stations", "the menu stays open so they can try another")
 
+    async def test_listener_is_told_the_volume_starts_low_and_how_to_raise_it(self):
+        self.bot.public.players = {5: types.SimpleNamespace(volume=0.4)}
+        v = PK.GuidedPicker(self.cog, 1)
+        v.show_stations("IL", "Chicago")
+        i = await self.picked(v, v.stations[0].uuid)
+        text = i.followup.send.await_args.args[0]
+        self.assertIn("Volume starts low (40%)", text)
+        self.assertIn("User Volume", text)
+        self.assertIn("/stations volume", text)
+        self.bot.public.players = {5: types.SimpleNamespace(volume=0.9)}
+        i = await self.picked(v, v.stations[1].uuid)
+        self.assertNotIn("starts low", i.followup.send.await_args.args[0], "no tip when the volume is already high")
+
     async def test_whole_state_is_remembered_without_a_city(self):
         v = PK.GuidedPicker(self.cog, 1)
         v.show_stations("TX", None)
