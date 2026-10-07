@@ -28,11 +28,22 @@ class Stations(commands.Cog):
         self.bot.add_view(RemoteView(self))
 
     # ---- helpers
-    async def _gate(self, interaction: discord.Interaction) -> bool:
+    @staticmethod
+    def is_home(guild_id) -> bool:
+        return bool(HOME_GUILD_ID) and str(guild_id) == HOME_GUILD_ID
+
+    async def tune_here(self, interaction: discord.Interaction, station) -> tuple[bool, str]:
+        """Play a station: on the home server through the Crüe FM radio, elsewhere through the public player."""
+        if self.is_home(interaction.guild_id):
+            return await self.bot.pick_station(interaction.user, station)
+        return await self.bot.public.tune(interaction.user, station, interaction.channel_id)
+
+    async def _gate(self, interaction: discord.Interaction, home_ok: bool = False) -> bool:
         """False (after replying) when this command can't run here."""
-        if HOME_GUILD_ID and str(interaction.guild_id) == HOME_GUILD_ID:
+        if self.is_home(interaction.guild_id) and not home_ok:
             await interaction.response.send_message(
-                "This server runs the Crüe FM station rotation, so `/stations` is for other servers. Add the bot to a test server to try it.",
+                "On this server the radio card has the controls: pick a state under it, or tap **Back to rotation**. "
+                "This command is for other servers.",
                 ephemeral=True,
             )
             return False
@@ -49,7 +60,7 @@ class Stations(commands.Cog):
 
     async def open_picker(self, interaction: discord.Interaction, state: str | None = None, city: str | None = None):
         """Open the guided picker privately for whoever asked, optionally already on a state or city."""
-        if not await self._gate(interaction):
+        if not await self._gate(interaction, home_ok=True):
             return
         area = self.bot.public.area_for(interaction.user.id)
         picker = GuidedPicker(self, interaction.user.id, saved_area=area)
@@ -157,7 +168,7 @@ class Stations(commands.Cog):
         if state is None and city is None and genre is None:
             await self.open_picker(interaction)
             return
-        if not await self._gate(interaction):
+        if not await self._gate(interaction, home_ok=True):
             return
         if state is None:
             await interaction.response.send_message("Pick a state as well, or run `/stations browse` on its own for the guided menu.", ephemeral=True)
@@ -186,7 +197,7 @@ class Stations(commands.Cog):
     @app_commands.describe(query="e.g. WLS, 94.7, classic rock, jazz", state="Limit to one state (optional)")
     @app_commands.autocomplete(state=state_autocomplete)
     async def search(self, interaction: discord.Interaction, query: app_commands.Range[str, 2, 60], state: str | None = None):
-        if not await self._gate(interaction):
+        if not await self._gate(interaction, home_ok=True):
             return
         found = self.bot.directory.search(query, state if state in dirmod.STATES else None)
         if not found:

@@ -67,12 +67,22 @@ class Autocomplete(unittest.IsolatedAsyncioTestCase):
 
 
 class Commands(unittest.IsolatedAsyncioTestCase):
-    async def test_home_server_is_told_it_has_the_rotation(self):
+    async def test_home_server_points_other_commands_at_the_radio_card(self):
         cog, _ = make_cog([rec(1)], home="5")
+        for call in (cog.stop_radio, cog.show_now, lambda i: cog.nudge_volume(i, 0.1)):
+            i = interaction(guild_id=5)
+            await call(i)
+            self.assertIn("radio card", i.response.send_message.await_args.args[0])
+            self.assertTrue(i.response.send_message.await_args.kwargs["ephemeral"])
+
+    async def test_home_server_can_browse_and_search(self):
+        cog, _ = make_cog([rec(i) for i in range(5)], home="5")
         i = interaction(guild_id=5)
-        await cog.browse.callback(cog, i, state="IL")
-        self.assertIn("rotation", i.response.send_message.await_args.args[0])
-        self.assertTrue(i.response.send_message.await_args.kwargs["ephemeral"])
+        await cog.browse.callback(cog, i)
+        self.assertEqual(i.response.send_message.await_args.kwargs["view"].screen, "states")
+        i = interaction(guild_id=5)
+        await cog.search.callback(cog, i, query="WA0")
+        self.assertEqual(i.response.send_message.await_args.kwargs["view"].screen, "stations")
 
     async def test_directory_still_loading(self):
         cog, _ = make_cog([])

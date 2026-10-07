@@ -398,8 +398,8 @@ class Entry(unittest.IsolatedAsyncioTestCase):
     async def test_home_server_is_told_to_use_another_server(self):
         cog, _ = make_cog(world_records(), home="5")
         i = interaction(guild_id=5)
-        await cog.open_picker(i)
-        self.assertIn("rotation", i.response.send_message.await_args.args[0])
+        await cog.stop_radio(i)
+        self.assertIn("radio card", i.response.send_message.await_args.args[0])
 
 
 class Panel(unittest.IsolatedAsyncioTestCase):
@@ -638,3 +638,60 @@ class LivePanel(unittest.IsolatedAsyncioTestCase):
         await v._station_picked(i)
         i.channel.send.assert_not_awaited()
         self.assertIn("radio panel", i.followup.send.await_args.args[0])
+
+
+class HomeRadio(unittest.IsolatedAsyncioTestCase):
+    """The home server: the card's menus pick a station, and the rotation can be brought back."""
+
+    def setUp(self):
+        self.cog, self.bot = make_cog(world_records(), home="5")
+        self.bot.pick_station = AsyncMock(return_value=(True, "Now playing **X**"))
+        self.bot.back_to_rotation = AsyncMock(return_value=(True, "Back on the rotation"))
+        self.bot.get_cog = lambda name: self.cog
+
+    def test_home_view_is_permanent_valid_and_has_every_state(self):
+        v = PK.HomeRadioView(self.bot)
+        self.assertTrue(v.is_persistent())
+        valid(v)
+        offered = [o.value for c in v.children if isinstance(c, discord.ui.Select) for o in c.options]
+        self.assertEqual(sorted(offered), sorted(D.STATES))
+        ids = [c.custom_id for c in v.children]
+        self.assertEqual(len(set(ids)), len(ids))
+        self.assertTrue(all(x.startswith("crue:home:") for x in ids), "separate from the other servers' controls")
+
+    async def test_choosing_a_state_opens_a_private_picker(self):
+        v = PK.HomeRadioView(self.bot)
+        i = interaction(guild_id=5)
+        i.data = {"values": ["IL"]}
+        select = [c for c in v.children if isinstance(c, discord.ui.Select)][0]
+        await select.callback(i)
+        kw = i.response.send_message.await_args.kwargs
+        self.assertTrue(kw["ephemeral"])
+        self.assertEqual(kw["view"].screen, "areas")
+
+    async def test_picking_a_station_plays_it_on_the_home_radio_not_the_public_player(self):
+        v = PK.GuidedPicker(self.cog, 1)
+        v.show_stations("IL", "Chicago")
+        i = interaction(guild_id=5)
+        i.data = {"values": [v.stations[0].uuid]}
+        await v._station_picked(i)
+        self.bot.pick_station.assert_awaited_once()
+        self.bot.public.tune.assert_not_awaited()
+        i.channel.send.assert_not_awaited()
+        self.assertIn("radio card", i.followup.send.await_args.args[0])
+
+    async def test_a_refused_pick_is_explained(self):
+        self.bot.pick_station.return_value = (False, "Join the radio channel first")
+        v = PK.GuidedPicker(self.cog, 1)
+        v.show_stations("IL", "Chicago")
+        i = interaction(guild_id=5)
+        i.data = {"values": [v.stations[0].uuid]}
+        await v._station_picked(i)
+        self.assertIn("Join the radio channel", i.followup.send.await_args.args[0])
+
+    async def test_back_to_rotation_button(self):
+        v = PK.HomeRadioView(self.bot)
+        i = interaction(guild_id=5)
+        await v.rotation.callback(i)
+        self.bot.back_to_rotation.assert_awaited_once()
+        self.assertTrue(i.response.send_message.await_args.kwargs["ephemeral"])

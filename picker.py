@@ -341,13 +341,16 @@ class GuidedPicker(discord.ui.View):
         if station is None:
             await interaction.followup.send("That station is no longer in the list. Please search again.", ephemeral=True)
             return
-        ok, message = await self.cog.bot.public.tune(interaction.user, station, interaction.channel_id)
+        ok, message = await self.cog.tune_here(interaction, station)
         if not ok:
             await interaction.followup.send(f"❌ {message}", ephemeral=True)
             return
         if self.state in dirmod.STATES:
             await self.cog.bot.public.remember_area(interaction.user.id, self.state, self.city)
             self.saved_area = (self.state, self.city)
+        if self.cog.is_home(interaction.guild_id):
+            await interaction.followup.send(f"✅ Now playing **{clean(station.name)}**. The radio card updates in a few seconds.", ephemeral=True)
+            return
         embed, card = await now_playing(station, "Now playing", by=interaction.user.display_name)
         player = self.cog.bot.public.players.get(interaction.guild_id)
         tip = ""
@@ -385,6 +388,48 @@ async def panel_content(player, who: str | None = None) -> tuple[discord.Embed, 
     return embed, []
 
 
+def add_state_menus(view: discord.ui.View, prefix: str, callback):
+    """Three select menus covering every state (Discord allows 25 options per menu), rows 0-2."""
+    rows = [(code, name, 0) for code, name in dirmod.STATES.items()]
+    for idx, group in enumerate(state_groups(rows)):
+        sel = discord.ui.Select(
+            placeholder=f"🗺️ Pick your state: {group[0][1]} – {group[-1][1]}",
+            options=[discord.SelectOption(label=name, value=code) for code, name, _ in group],
+            custom_id=f"{prefix}:states{idx}", row=idx)
+        sel.callback = callback
+        view.add_item(sel)
+
+
+class HomeRadioView(discord.ui.View):
+    """Controls under the home server's Crüe FM card: browse by state, or hand the radio back to
+    the commercial-skipping rotation. Only people in the radio channel can change what plays."""
+
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+        add_state_menus(self, "crue:home", self._state_picked)
+
+    @property
+    def _cog(self):
+        return self.bot.get_cog("Stations")
+
+    async def _state_picked(self, interaction: discord.Interaction):
+        await self._cog.open_picker(interaction, state=interaction.data["values"][0])
+
+    @discord.ui.button(label="Find a station", emoji="📻", style=discord.ButtonStyle.primary, custom_id="crue:home:find", row=3)
+    async def find(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._cog.open_picker(interaction)
+
+    @discord.ui.button(emoji="🌐", style=discord.ButtonStyle.secondary, custom_id="crue:home:online", row=3)
+    async def online(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._cog.open_picker(interaction, state=dirmod.ONLINE)
+
+    @discord.ui.button(label="Back to rotation", emoji="↩️", style=discord.ButtonStyle.success, custom_id="crue:home:rotation", row=3)
+    async def rotation(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ok, message = await self.bot.back_to_rotation(interaction.user)
+        await interaction.response.send_message(("✅ " if ok else "❌ ") + message, ephemeral=True)
+
+
 class RemoteView(discord.ui.View):
     """The radio box's controls: pick your state right in the box (three menus, since Discord caps a
     menu at 25 options), then Find / Online / volume / Stop. Permanent, so it keeps working after a
@@ -393,14 +438,7 @@ class RemoteView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
-        rows = [(code, name, 0) for code, name in dirmod.STATES.items()]
-        for idx, group in enumerate(state_groups(rows)):
-            sel = discord.ui.Select(
-                placeholder=f"🗺️ Pick your state: {group[0][1]} – {group[-1][1]}",
-                options=[discord.SelectOption(label=name, value=code) for code, name, _ in group],
-                custom_id=f"crue:remote:states{idx}", row=idx)
-            sel.callback = self._state_picked
-            self.add_item(sel)
+        add_state_menus(self, "crue:remote", self._state_picked)
 
     async def _state_picked(self, interaction: discord.Interaction):
         await self.cog.open_picker(interaction, state=interaction.data["values"][0])

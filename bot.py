@@ -15,7 +15,8 @@ from dotenv import load_dotenv
 
 import directory as dirmod
 import visuals
-from publicradio import PublicRadio, opus_settings
+from picker import HomeRadioView, clean
+from publicradio import FFMPEG_BEFORE, FFMPEG_OPTIONS, START_WAIT_S, PublicRadio, _Probe, check_stream_url, opus_settings
 
 load_dotenv()
 
@@ -168,6 +169,11 @@ class MusicBot(commands.Bot):
         self._last_switch = 0.0
         self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
         self._rock_task: asyncio.Task | None = None
+        self._pick = None               # a station someone chose from the directory (pauses the rotation)
+        self._pick_url = ""
+        self._pick_by = ""
+        self._pick_started = False
+        self._pick_cooldown: dict[int, float] = {}
         self._events: collections.deque = collections.deque(maxlen=12)   # recent break/switch decisions, for /breakcheck
         self._why: dict[str, str] = {st["key"]: "" for st in STATIONS}     # why each station was last judged music/break
 
@@ -177,6 +183,7 @@ class MusicBot(commands.Bot):
         await self.public.start()
         await self.load_extension("cogs.music")
         await self.load_extension("cogs.stations")
+        self.add_view(HomeRadioView(self))      # the controls under the radio card survive restarts
 
         @self.tree.command(name="radio", description="Show the station and song playing now")
         @discord.app_commands.guild_only()
@@ -385,12 +392,69 @@ class MusicBot(commands.Bot):
     def _start_playing(self, vc: discord.VoiceClient):
         if vc.is_playing() or vc.is_paused():
             vc.stop()
-        st = STATION_BY_KEY[self._current]
-        opts = {**FFMPEG_RADIO_OPTIONS, "options": f"-vn -af aresample=48000:resampler=soxr:precision=28,volume={st['gain_db']}dB"}
-        self._tap = visuals.SpectrumTap(discord.FFmpegPCMAudio(st["url"], **opts))
+        if self._pick is not None:
+            self._pick_started = False
+            raw = discord.FFmpegPCMAudio(self._pick_url, before_options=FFMPEG_BEFORE, options=FFMPEG_OPTIONS)
+            self._tap = visuals.SpectrumTap(_Probe(raw, lambda: setattr(self, "_pick_started", True)))
+            log.info("Radio: playing picked station %s", self._pick.name)
+        else:
+            st = STATION_BY_KEY[self._current]
+            opts = {**FFMPEG_RADIO_OPTIONS, "options": f"-vn -af aresample=48000:resampler=soxr:precision=28,volume={st['gain_db']}dB"}
+            self._tap = visuals.SpectrumTap(discord.FFmpegPCMAudio(st["url"], **opts))
+            log.info("Radio: playing %s → %s", st["name"], st["url"])
         source = discord.PCMVolumeTransformer(self._tap, volume=self._effective_volume())
         vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None, **opus_settings(vc.channel))
-        log.info("Radio: playing %s → %s", st["name"], st["url"])
+
+    # ---- picking a station from the directory (the card's menus); the rotation resumes on request
+    def _radio_vc(self):
+        channel = self.get_channel(int(RADIO_CHANNEL_ID)) if RADIO_CHANNEL_ID else None
+        vc = channel.guild.voice_client if channel else None
+        return channel, (vc if vc and vc.is_connected() else None)
+
+    async def pick_station(self, member: discord.Member, station) -> tuple[bool, str]:
+        channel, vc = self._radio_vc()
+        if vc is None:
+            return False, "The radio isn't connected right now. Try again in a moment."
+        if not member.voice or member.voice.channel != channel:
+            return False, f"Join {channel.mention} first, then pick a station."
+        now = time.monotonic()
+        if now - self._pick_cooldown.get(member.id, 0) < 4:
+            return False, "Easy there, give it a few seconds before changing again."
+        self._pick_cooldown[member.id] = now
+        url = await self.directory.resolve_url(station)
+        problem = await check_stream_url(url)
+        if problem:
+            return False, problem
+        before = (self._pick, self._pick_url, self._pick_by)
+        self._pick, self._pick_url, self._pick_by = station, url, member.display_name
+        self._start_playing(vc)
+        for _ in range(int(START_WAIT_S / 0.2)):
+            if self._pick_started:
+                break
+            await asyncio.sleep(0.2)
+        if not self._pick_started:
+            self._pick, self._pick_url, self._pick_by = before
+            self._start_playing(vc)
+            return False, f"**{station.name}** isn't responding right now, so I went back to what was playing."
+        self._np_key = None
+        self._note("%s picked %s", member.display_name, station.name)
+        await self._update_presence()
+        return True, f"Now playing **{station.name}**"
+
+    async def back_to_rotation(self, member: discord.Member) -> tuple[bool, str]:
+        channel, vc = self._radio_vc()
+        if self._pick is None:
+            return False, "Already on the Crüe FM rotation."
+        if vc is None:
+            return False, "The radio isn't connected right now."
+        if not member.voice or member.voice.channel != channel:
+            return False, f"Join {channel.mention} first."
+        self._pick = None
+        self._start_playing(vc)
+        self._np_key = None
+        self._note("%s went back to the rotation", member.display_name)
+        await self._update_presence()
+        return True, "Back on the Crüe FM rotation, skipping commercials."
 
     def _note(self, text: str, *args):
         """Log a decision and keep it for /breakcheck."""
@@ -416,6 +480,8 @@ class MusicBot(commands.Bot):
 
     def _reevaluate(self):
         """If the playing station is in a commercial break, move to the next one that's on music."""
+        if self._pick is not None:
+            return          # someone chose a station from the directory; the rotation is paused
         keys = [st["key"] for st in STATIONS]
         cur = self._current
         state = self._breaks[cur]
@@ -588,7 +654,9 @@ class MusicBot(commands.Bot):
     async def _update_presence(self):
         """Show the playing station and song as the bot's 'Listening to' status."""
         st = STATION_BY_KEY[self._current]
-        if self._breaks[self._current] is True:
+        if self._pick is not None:
+            text = f"{self._pick.name} · picked by {self._pick_by}"
+        elif self._breaks[self._current] is True:
             text = f"Commercial break · {st['name']}"
         else:
             song = self._song_text(self._current)
@@ -701,9 +769,10 @@ class MusicBot(commands.Bot):
             return
         cur = self._current
         st = STATION_BY_KEY[cur]
-        commercial = self._breaks[cur] is True
-        song = self._now.get(cur)
-        key = (cur, song, commercial)
+        pick = self._pick
+        commercial = pick is None and self._breaks[cur] is True
+        song = None if pick else self._now.get(cur)
+        key = ("pick", pick.uuid) if pick else (cur, song, commercial)
         if key == self._np_key and now - self._np_last < CARD_REFRESH_S:
             return
         channel = self.get_channel(int(NOW_PLAYING_CHANNEL_ID))
@@ -712,21 +781,30 @@ class MusicBot(commands.Bot):
             log.warning("Now Playing channel %s not found", NOW_PLAYING_CHANNEL_ID)
             return
 
-        if song and not commercial:
-            self._np_art = await self._fetch_art(song[0], song[1]) if song[0] else None
-        title = song[1] if song else st["name"]
-        artist = (song[0] if song and song[0] else "Live radio")
-        note = ""
-        if commercial:
-            alt = self._pick_music_station([k for k in self._breaks if k != cur])
-            note = f"Switching to {STATION_BY_KEY[alt]['name']}…" if alt else "Every station is in a break — hang tight"
+        if pick:
+            self._np_art = None
+            name, title = pick.name, pick.name
+            artist = " · ".join(x for x in (pick.place, ", ".join(sorted(pick.genres)[:2])) if x) or "Live radio"
+            note = ""
+            description = f"**{clean(pick.name)}**\nPicked by {clean(self._pick_by)} · the Crüe FM rotation is paused. Tap ↩ to bring it back."
+        else:
+            if song and not commercial:
+                self._np_art = await self._fetch_art(song[0], song[1]) if song[0] else None
+            name = st["name"]
+            title = song[1] if song else st["name"]
+            artist = (song[0] if song and song[0] else "Live radio")
+            note = ""
+            if commercial:
+                alt = self._pick_music_station([k for k in self._breaks if k != cur])
+                note = f"Switching to {STATION_BY_KEY[alt]['name']}…" if alt else "Every station is in a break — hang tight"
+            description = self._card_text(st, self._song_text(cur) or st["name"], commercial)
         spectrum = list(self._tap.history)[-30:] if self._tap else []
         gif, accent = await asyncio.to_thread(
-            visuals.render_banner, self._np_art, st["name"], title, artist,
-            None if commercial else self._progress(cur), spectrum, commercial, note,
+            visuals.render_banner, self._np_art, name, title, artist,
+            None if (commercial or pick) else self._progress(cur), spectrum, commercial, note,
         )
         embed = discord.Embed(
-            description=self._card_text(st, self._song_text(cur) or st["name"], commercial),
+            description=description,
             color=discord.Color.from_rgb(*accent),
             timestamp=discord.utils.utcnow(),
         )
@@ -741,11 +819,11 @@ class MusicBot(commands.Bot):
                 self._np_message = await self._find_card(channel)
             if self._np_message is not None:
                 try:
-                    await self._np_message.edit(embed=embed, attachments=[new_file()])
+                    await self._np_message.edit(embed=embed, attachments=[new_file()], view=HomeRadioView(self))
                 except discord.NotFound:
                     self._np_message = None
             if self._np_message is None:
-                self._np_message = await channel.send(embed=embed, file=new_file())
+                self._np_message = await channel.send(embed=embed, file=new_file(), view=HomeRadioView(self))
             self._np_key, self._np_last = key, time.monotonic()
         except discord.Forbidden:
             self._np_backoff = time.monotonic() + 600
@@ -789,6 +867,11 @@ class MusicBot(commands.Bot):
         return embed
 
     def _radio_embed(self) -> discord.Embed:
+        if self._pick is not None:
+            embed = discord.Embed(title=f"📻 {clean(self._pick.name)}", description=f"Picked by **{clean(self._pick_by)}**. "
+                                  "The Crüe FM rotation is paused; use **Back to rotation** under the radio card to resume it.",
+                                  color=discord.Color.red())
+            return embed
         cur = STATION_BY_KEY[self._current]
         song = self._song_text(self._current)
         if self._breaks[self._current] is True:
