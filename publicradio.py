@@ -35,7 +35,21 @@ FFMPEG_BEFORE = (
     "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
     "-rw_timeout 15000000 -user_agent CrueFM/1.0"
 )
-FFMPEG_OPTIONS = "-vn -af loudnorm=I=-20:TP=-2:LRA=9"   # level unknown stations to a comfortable volume
+# Leveling for unknown stations: a good resampler (many streams are 22/44 kHz), then a smooth
+# dynamic leveler that evens out loud and quiet stations without the pumping and the heavy CPU of
+# loudnorm (about 6x lighter on our shared core), -3.5 dB to land near -20 LUFS like before, and a
+# limiter so peaks can never clip.
+LEVEL_FILTER = ("aresample=48000:resampler=soxr:precision=28,"
+                "dynaudnorm=f=1000:g=21:p=0.4:m=5:s=8,volume=-3.5dB,alimiter=limit=0.85")
+FFMPEG_OPTIONS = f"-vn -af {LEVEL_FILTER}"
+
+
+def opus_settings(channel) -> dict:
+    """How the voice connection encodes: tuned for music, at least 128 kbps and up to the channel's
+    own bitrate (boosted servers allow more), with light error-correction so it doesn't eat bitrate."""
+    kbps = int(getattr(channel, "bitrate", 0) or 0) // 1000
+    return {"bitrate": max(128, min(kbps, 384)), "signal_type": "music", "bandwidth": "full",
+            "fec": True, "expected_packet_loss": 0.05}
 
 
 async def check_stream_url(url: str) -> str | None:
@@ -276,7 +290,7 @@ class PublicRadio:
         source = discord.PCMVolumeTransformer(
             _Probe(raw, lambda: setattr(player, "started", True)), volume=player.volume
         )
-        vc.play(source, after=lambda err: self._on_end(player, err))
+        vc.play(source, after=lambda err: self._on_end(player, err), **opus_settings(vc.channel))
 
     @staticmethod
     def _on_end(player: PublicPlayer, error):

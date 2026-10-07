@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 import directory as dirmod
 import visuals
-from publicradio import PublicRadio
+from publicradio import PublicRadio, opus_settings
 
 load_dotenv()
 
@@ -385,10 +385,10 @@ class MusicBot(commands.Bot):
         if vc.is_playing() or vc.is_paused():
             vc.stop()
         st = STATION_BY_KEY[self._current]
-        opts = {**FFMPEG_RADIO_OPTIONS, "options": f"-vn -af volume={st['gain_db']}dB"}
+        opts = {**FFMPEG_RADIO_OPTIONS, "options": f"-vn -af aresample=48000:resampler=soxr:precision=28,volume={st['gain_db']}dB"}
         self._tap = visuals.SpectrumTap(discord.FFmpegPCMAudio(st["url"], **opts))
         source = discord.PCMVolumeTransformer(self._tap, volume=self._effective_volume())
-        vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None)
+        vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None, **opus_settings(vc.channel))
         log.info("Radio: playing %s → %s", st["name"], st["url"])
 
     def _note(self, text: str, *args):

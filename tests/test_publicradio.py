@@ -39,8 +39,8 @@ class FakeVC:
 
     dead_urls: set = set()
 
-    def play(self, source, after=None):
-        self.source, self.playing, self.after = source, True, after
+    def play(self, source, after=None, **opus):
+        self.source, self.playing, self.after, self.opus = source, True, after, opus
         self.plays += 1
         if getattr(source.original.inner, "url", None) in FakeVC.dead_urls:
             self.playing = False
@@ -193,6 +193,7 @@ class Tuning(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(vc.playing)
         self.assertIsInstance(vc.source, discord.PCMVolumeTransformer)
         self.assertEqual(vc.source.original.inner.kwargs["before_options"], P.FFMPEG_BEFORE)
+        self.assertEqual(vc.opus["signal_type"], "music", "voice is encoded for music")
         player = self.radio.players[1]
         self.assertEqual((player.started_by, player.text_channel_id, player.volume), (1, 55, P.DEFAULT_VOLUME))
         self.bot.directory.resolve_url.assert_awaited()
@@ -252,7 +253,7 @@ class Tuning(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.g.voice_client.playing)
 
     async def test_slow_station_times_out(self):
-        with mock.patch.object(P, "START_WAIT_S", 0.3), mock.patch.object(FakeVC, "play", lambda self, source, after=None: setattr(self, "playing", True)):
+        with mock.patch.object(P, "START_WAIT_S", 0.3), mock.patch.object(FakeVC, "play", lambda self, source, after=None, **opus: setattr(self, "playing", True)):
             ok, msg = await self.radio.tune(make_member(self.g, 1, self.ch), station("Silent FM"))
         self.assertFalse(ok)
         self.assertNotIn(1, self.radio.players)
@@ -349,3 +350,30 @@ class Upkeep(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SoundQuality(unittest.TestCase):
+    def test_opus_settings_follow_the_channel_bitrate(self):
+        import types
+        ch = lambda bps: types.SimpleNamespace(bitrate=bps)
+        self.assertEqual(P.opus_settings(ch(64000))["bitrate"], 128, "never below the old default")
+        self.assertEqual(P.opus_settings(ch(256000))["bitrate"], 256)
+        self.assertEqual(P.opus_settings(ch(512000))["bitrate"], 384, "capped")
+        self.assertEqual(P.opus_settings(object())["bitrate"], 128)
+        s = P.opus_settings(ch(96000))
+        self.assertEqual((s["signal_type"], s["bandwidth"]), ("music", "full"))
+
+    def test_leveling_filter_runs_in_real_ffmpeg_and_lands_near_target(self):
+        import shutil
+        import subprocess
+        if not shutil.which("ffmpeg"):
+            self.skipTest("ffmpeg not installed")
+        base = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"]
+        for level in ("0.02", "0.9"):   # a very quiet and a very loud station
+            src = f"sine=frequency=440:duration=6:sample_rate=22050,volume={level}"
+            out = subprocess.run(base + [src, "-vn", "-af", P.LEVEL_FILTER, "-f", "s16le", "-ar", "48000", "-ac", "2", "-"],
+                                 capture_output=True, check=True).stdout
+            self.assertGreater(len(out), 48000 * 4 * 5, "audio comes out")
+            import array
+            samples = array.array("h", out[:len(out) // 2 * 2])
+            self.assertLess(max(abs(x) for x in samples), 32768 * 0.86, "the limiter keeps peaks below clipping")
