@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import discord
 from discord.ext import tasks
 
+from library import ffmpeg_before
 from store import SavedRadio, Store
 
 log = logging.getLogger("public")
@@ -367,7 +368,8 @@ class PublicRadio:
         if vc.is_playing() or vc.is_paused():
             vc.stop()
         player.ended = player.started = False
-        raw = discord.FFmpegPCMAudio(player.url, before_options=FFMPEG_BEFORE, options=FFMPEG_OPTIONS)
+        before = ffmpeg_before(FFMPEG_BEFORE, player.station)
+        raw = discord.FFmpegPCMAudio(player.url, before_options=before, options=FFMPEG_OPTIONS)
         source = discord.PCMVolumeTransformer(
             _Probe(raw, lambda: setattr(player, "started", True)), volume=player.volume
         )

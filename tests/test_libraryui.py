@@ -44,13 +44,15 @@ class Browsing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(v.sources, [L.FREE])
         self.assertTrue(all(c.label != "Popular hits" for c in v.children if isinstance(c, discord.ui.Button)))
 
-    async def test_no_key_means_no_free_library(self):
+    async def test_free_music_works_without_a_jamendo_key(self):
         cog, bot = make_cog(free_key="")
         i = interaction()
         await cog.open_library(i)
-        self.assertIn("isn't set up", i.response.send_message.await_args.args[0])
+        kw = i.response.send_message.await_args.kwargs
+        self.assertEqual(kw["view"].sources, [L.FREE], "ccMixter needs no key")
+        self.assertNotIn("Metal", [o.value for o in kw["view"].children[0].options], "only genres that have songs are offered")
         home_view = LP.LibraryView(cog, 1, home=True)
-        self.assertEqual(home_view.sources, [L.HITS], "home still has the hits")
+        self.assertEqual(home_view.sources, [L.HITS, L.FREE])
 
     async def test_genre_shows_songs_with_a_valid_layout(self):
         cog, _ = make_cog(home="5")

@@ -206,7 +206,6 @@ class MusicBot(commands.Bot):
     async def setup_hook(self):
         self._http = aiohttp.ClientSession()
         self.directory.session = self._http
-        self.library.session = self._http
         await self.public.start()
         await self.load_extension("cogs.music")
         await self.load_extension("cogs.stations")
@@ -302,6 +301,7 @@ class MusicBot(commands.Bot):
             self._rock_task.cancel()
         for task in self._icy_tasks:
             task.cancel()
+        await self.library.close()
         if self._http:
             await self._http.close()
         await super().close()
@@ -430,7 +430,7 @@ class MusicBot(commands.Bot):
             song = self._songs[self._song_i]
             self._song_started = False
             self._song_began = time.time()
-            before = FFMPEG_BEFORE if song.source == "free" else SONG_BEFORE
+            before = songlib.ffmpeg_before(FFMPEG_BEFORE, song) if song.source == "free" else SONG_BEFORE
             raw = discord.FFmpegPCMAudio(self._song_url, before_options=before, options=FFMPEG_OPTIONS)
             self._tap = visuals.SpectrumTap(_Probe(raw, lambda: setattr(self, "_song_started", True)))
             source = discord.PCMVolumeTransformer(self._tap, volume=self._effective_volume())

@@ -1,13 +1,14 @@
 """The song library: browse songs by genre and play them.
 
 Two sources:
-  * "free"  - Jamendo's Creative Commons catalog (needs a free JAMENDO_CLIENT_ID). Real streams with
-              artist and cover art, so it is safe to play on any server.
+  * "free"  - Creative Commons music, safe to play on any server. ccMixter needs no sign-up and is always
+              on; Jamendo (a free JAMENDO_CLIENT_ID) is added when a key is set, and is tried first.
   * "hits"  - curated popular songs per genre, found on YouTube when played. Home server only: those
               songs are not licensed for a public bot to stream.
 """
 import logging
 import os
+import shlex
 import time
 from dataclasses import dataclass
 
@@ -16,6 +17,7 @@ import aiohttp
 log = logging.getLogger("library")
 
 JAMENDO_URL = "https://api.jamendo.com/v3.0/tracks/"
+CCMIXTER_URL = "https://ccmixter.org/api/query"
 PAGE = 25                  # one page fits a Discord select menu
 CACHE_S = 1800
 FREE, HITS = "free", "hits"
@@ -29,6 +31,12 @@ GENRES = [
     ("Chill", "🌙", "chillout"), ("80s", "📼", None), ("90s", "💿", None),
 ]
 GENRE_BY_LABEL = {g[0]: g for g in GENRES}
+# ccMixter's tags for the same genres (it has none for metal, classic rock or the decades)
+CCMIXTER_TAGS = {
+    "Rock": "rock", "Alternative": "indie", "Punk": "punk", "Pop": "pop", "Hip Hop": "hip_hop", "R&B / Soul": "soul",
+    "Country": "country", "Electronic": "electronic", "Jazz": "jazz", "Blues": "blues", "Latin": "latin",
+    "Reggae": "reggae", "Folk": "folk", "Classical": "classical", "Chill": "chill",
+}
 
 # Curated popular songs per genre: (artist, title). Played on the home server only.
 HITS_LIST: dict[str, list[tuple[str, str]]] = {
@@ -110,6 +118,11 @@ HITS_LIST: dict[str, list[tuple[str, str]]] = {
             ("Britney Spears", "...Baby One More Time"), ("Counting Crows", "Mr. Jones"), ("Green Day", "Longview")],
 }
 
+# ccMixter refuses downloads that don't look like they come from its own site (anti-hotlinking), so its
+# songs are fetched with the song's own ccMixter page as the referrer. Set CCMIXTER=0 to turn the source
+# off completely (it can't play without the referrer).
+CCMIXTER_ON = os.getenv("CCMIXTER", "1") != "0"
+
 # Fly sets this (a free key from developer.jamendo.com). Without it the free library is hidden.
 JAMENDO_CLIENT_ID = os.getenv("JAMENDO_CLIENT_ID", "")
 
@@ -126,6 +139,8 @@ class Song:
     url: str = ""          # direct audio stream (free songs); empty for hits, which are looked up when played
     duration: int = 0
     art: str = ""
+    credit: str = ""       # licence and where it came from, shown on the card (Creative Commons asks for credit)
+    referer: str = ""      # page to present as the referrer when fetching the audio (ccMixter needs it)
 
     @property
     def query(self) -> str:
@@ -159,6 +174,12 @@ class Song:
         return f"{m}:{s:02d}" if self.duration else ""
 
 
+def ffmpeg_before(base: str, song) -> str:
+    """ffmpeg input options for a song: the shared ones, plus the referrer when the song needs one."""
+    referer = getattr(song, "referer", "")
+    return f"{base} -referer {shlex.quote(referer)}" if referer else base
+
+
 def genre_emoji(label: str) -> str:
     return GENRE_BY_LABEL.get(label, ("", "🎵", None))[1]
 
@@ -166,18 +187,19 @@ def genre_emoji(label: str) -> str:
 class Library:
     def __init__(self, session: aiohttp.ClientSession | None = None, client_id: str | None = None):
         self.session = session
+        self._own_session = False
         self.client_id = JAMENDO_CLIENT_ID if client_id is None else client_id
-        self._cache: dict[tuple[str, int], tuple[float, list[Song]]] = {}
+        self._cache: dict[tuple[str, str, int], tuple[float, list[Song]]] = {}
 
     @property
     def free_enabled(self) -> bool:
-        return bool(self.client_id)
+        return True            # ccMixter needs no key, so free music is always available
 
     def genres(self, source: str) -> list[tuple[str, str]]:
         """(label, emoji) of the genres a source has songs for."""
         out = []
         for label, emoji, tag in GENRES:
-            if source == FREE and tag and self.free_enabled:
+            if source == FREE and ((tag and self.client_id) or (CCMIXTER_ON and label in CCMIXTER_TAGS)):
                 out.append((label, emoji))
             elif source == HITS and HITS_LIST.get(label):
                 out.append((label, emoji))
@@ -188,25 +210,48 @@ class Library:
                 for i, (artist, title) in enumerate(HITS_LIST.get(genre, []))]
 
     async def free(self, genre: str, page: int = 0) -> list[Song]:
-        """One page of the most popular free songs for a genre. Cached for a while so browsing is quick
-        and the API isn't hit again and again."""
-        tag = GENRE_BY_LABEL.get(genre, (None, None, None))[2]
-        if not (tag and self.free_enabled and self.session):
-            return []
-        key = (genre, page)
+        """One page of popular free songs for a genre: Jamendo when there's a key, else (or if it has
+        nothing) ccMixter."""
+        if self.session is None:
+            # ccMixter repeats its whole JSON answer in a response header (tens of KB), which aiohttp's
+            # default limits reject, so the library keeps its own session with roomier limits.
+            self.session = aiohttp.ClientSession(max_line_size=2 ** 21, max_field_size=2 ** 21)
+            self._own_session = True
+        songs: list[Song] = []
+        if self.client_id and GENRE_BY_LABEL.get(genre, (None, None, None))[2]:
+            songs = await self._fetch("jamendo", genre, page, parse_jamendo)
+        if not songs and CCMIXTER_ON and genre in CCMIXTER_TAGS:
+            songs = await self._fetch("ccmixter", genre, page, parse_ccmixter)
+        return songs
+
+    async def close(self):
+        if self._own_session and self.session is not None:
+            await self.session.close()
+            self.session = None
+
+    async def _fetch(self, provider: str, genre: str, page: int, parser) -> list[Song]:
+        """Cached for a while so browsing is quick and the services aren't hit again and again."""
+        key = (provider, genre, page)
         hit = self._cache.get(key)
         if hit and time.monotonic() - hit[0] < CACHE_S:
             return hit[1]
-        params = {"client_id": self.client_id, "format": "json", "limit": PAGE, "offset": page * PAGE, "tags": tag,
-                  "order": "popularity_month", "audioformat": "mp32", "imagesize": 200, "audiodlallowed": "false"}
+        if provider == "jamendo":
+            url = JAMENDO_URL
+            params = {"client_id": self.client_id, "format": "json", "limit": PAGE, "offset": page * PAGE,
+                      "tags": GENRE_BY_LABEL[genre][2], "order": "popularity_month", "audioformat": "mp32",
+                      "imagesize": 200, "audiodlallowed": "false"}
+        else:
+            url = CCMIXTER_URL
+            params = {"f": "json", "tags": CCMIXTER_TAGS[genre], "sort": "rank", "limit": PAGE, "offset": page * PAGE,
+                      "dataview": "links_by"}      # the default view is too big for some networks (502)
         try:
-            async with self.session.get(JAMENDO_URL, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with self.session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json(content_type=None)
         except Exception as e:
-            log.warning("Free music lookup failed (%s)", e)
+            log.warning("%s lookup failed (%s)", provider, e)
             return hit[1] if hit else []
-        songs = parse_jamendo(data, genre)
-        if songs or data.get("headers", {}).get("code") == 0:
+        songs = parser(data, genre)
+        if songs or (isinstance(data, dict) and data.get("headers", {}).get("code") == 0) or data == []:
             self._cache[key] = (time.monotonic(), songs)
         return songs
 
@@ -224,5 +269,53 @@ def parse_jamendo(data: dict, genre: str) -> list[Song]:
             continue
         songs.append(Song(id=str(row.get("id")), title=str(row["name"]).strip(), artist=str(row.get("artist_name") or "Unknown artist").strip(),
                           genre=genre, source=FREE, url=url, duration=int(row.get("duration") or 0),
-                          art=str(row.get("album_image") or row.get("image") or "")))
+                          art=str(row.get("album_image") or row.get("image") or ""), credit="Creative Commons · Jamendo"))
     return songs
+
+
+def _seconds(text: str) -> int:
+    """'3:32' or '1:02:03' -> seconds; 0 if it isn't a time."""
+    try:
+        total = 0
+        for part in str(text).split(":"):
+            total = total * 60 + int(part)
+        return total
+    except ValueError:
+        return 0
+
+
+def parse_ccmixter(data, genre: str) -> list[Song]:
+    """Turn a ccMixter query (a JSON list of uploads) into songs: the first mp3 of each, skipping
+    anything flagged adult or without an https link."""
+    if not isinstance(data, list):
+        return []
+    songs = []
+    for row in data:
+        try:
+            song = _ccmixter_song(row, genre)
+        except Exception as e:       # one odd row must not hide the rest of the page
+            log.warning("Skipping an unreadable ccMixter row: %s", e)
+            continue
+        if song:
+            songs.append(song)
+    return songs
+
+
+def _ccmixter_song(row, genre: str) -> Song | None:
+    if not isinstance(row, dict):
+        return None
+    extra = row.get("upload_extra")
+    if isinstance(extra, dict) and extra.get("nsfw"):
+        return None
+    files = [f for f in (row.get("files") or []) if isinstance(f, dict)]
+    mp3 = next((f for f in files if f.get("file_nicname") == "mp3" and str(f.get("download_url", "")).startswith("https://")), None)
+    if not mp3 or not row.get("upload_name"):
+        return None
+    info = mp3.get("file_format_info")
+    licence = (row.get("license_name") or "Creative Commons").strip()
+    return Song(id=f"cc{row.get('upload_id')}", title=str(row["upload_name"]).strip(),
+                artist=str(row.get("user_real_name") or row.get("user_name") or "Unknown artist").strip(),
+                genre=genre, source=FREE, url=mp3["download_url"],
+                duration=_seconds((info if isinstance(info, dict) else {}).get("ps", "")),
+                credit=f"{licence} · ccMixter",
+                referer=str(row.get("file_page_url") or "https://ccmixter.org/"))

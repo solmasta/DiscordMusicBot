@@ -75,10 +75,11 @@ async def now_playing(station, headline: str, by: str | None = None) -> tuple[di
 
 def station_embed(station, headline: str, detailed: bool = True) -> discord.Embed:
     embed = discord.Embed(title=f"{'🎵' if getattr(station, 'is_song', False) else '📻'} {headline}", description=f"**{clean(station.name)}**", color=BRAND)
+    credit = getattr(station, "credit", "")
     if not detailed:
         if station.homepage.startswith(("http://", "https://")):
             embed.add_field(name="Website", value=station.homepage[:200], inline=False)
-        embed.set_footer(text=FOOTER)
+        embed.set_footer(text=credit or FOOTER)
         return embed
     if station.place:
         embed.add_field(name="Artist" if getattr(station, "is_song", False) else "Location", value=clean(station.place), inline=True)
@@ -89,7 +90,7 @@ def station_embed(station, headline: str, detailed: bool = True) -> discord.Embe
         embed.add_field(name="Stream", value=quality, inline=True)
     if station.homepage.startswith(("http://", "https://")):
         embed.add_field(name="Website", value=station.homepage[:200], inline=False)
-    embed.set_footer(text=FOOTER)
+    embed.set_footer(text=credit or FOOTER)
     return embed
 
 
