@@ -1,5 +1,6 @@
 import os
 import asyncio
+import collections
 import io
 import logging
 import re
@@ -167,6 +168,8 @@ class MusicBot(commands.Bot):
         self._last_switch = 0.0
         self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
         self._rock_task: asyncio.Task | None = None
+        self._events: collections.deque = collections.deque(maxlen=12)   # recent break/switch decisions, for /breakcheck
+        self._why: dict[str, str] = {st["key"]: "" for st in STATIONS}     # why each station was last judged music/break
 
     async def setup_hook(self):
         self._http = aiohttp.ClientSession()
@@ -192,8 +195,15 @@ class MusicBot(commands.Bot):
                 return
             await interaction.response.send_message(embed=self._radio_embed())
 
+        @self.tree.command(name="breakcheck", description="Why the radio thinks each station is on music or a commercial (diagnostics)")
+        @discord.app_commands.guild_only()
+        async def breakcheck(interaction: discord.Interaction):
+            await interaction.response.send_message(embed=self._breakcheck_embed(), ephemeral=True)
+
         home = discord.Object(id=int(GUILD_ID)) if GUILD_ID else None
         if home:
+            self.tree.remove_command("breakcheck")
+            self.tree.add_command(breakcheck, guild=home)
             # The music commands (/play and friends) are for the home server only; everything else is global.
             music = self.get_cog("Music")
             for cmd in (music.get_app_commands() if music else []):
@@ -381,6 +391,12 @@ class MusicBot(commands.Bot):
         vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None)
         log.info("Radio: playing %s → %s", st["name"], st["url"])
 
+    def _note(self, text: str, *args):
+        """Log a decision and keep it for /breakcheck."""
+        line = text % args if args else text
+        log.info("%s", line)
+        self._events.append(f"<t:{int(time.time())}:T> {line}")
+
     def _runway(self, key: str) -> float:
         """Seconds left in the song a station is playing (infinite if unknown)."""
         end = self._song_end.get(key)
@@ -413,12 +429,9 @@ class MusicBot(commands.Bot):
         if time.monotonic() - self._last_switch < MIN_SWITCH_SECONDS:
             return
         if state is None:
-            log.info("%s status unavailable — switching to %s", STATION_BY_KEY[cur]["name"], STATION_BY_KEY[target]["name"])
+            self._note("%s status unavailable — switching to %s", STATION_BY_KEY[cur]["name"], STATION_BY_KEY[target]["name"])
         else:
-            log.info(
-                "Break: %s hit a commercial — switching to %s",
-                STATION_BY_KEY[cur]["name"], STATION_BY_KEY[target]["name"],
-            )
+            self._note("Break: %s hit a commercial — switching to %s", STATION_BY_KEY[cur]["name"], STATION_BY_KEY[target]["name"])
         self._current = target
         self._last_switch = time.monotonic()
         channel = self.get_channel(int(RADIO_CHANNEL_ID))
@@ -445,11 +458,16 @@ class MusicBot(commands.Bot):
             self._now[key] = (_pretty(track[3]), _pretty(track[2]))
             self._song_end[key] = (track[0] + track[1]) / 1000 if track[1] > 0 else None
             self._song_span[key] = (track[0] / 1000, (track[0] + track[1]) / 1000) if track[1] > 0 else None
+        now_ms = time.time() * 1000
         if not ad:
+            self._why[key] = "no ad cue published"
             return False
         if track and track[0] >= ad[0]:
+            self._why[key] = f"song started {int((now_ms - track[0]) / 1000)}s ago, after the last ad cue ({int((now_ms - ad[0]) / 1000)}s ago)"
             return False
-        return time.time() * 1000 < ad[0] + ad[1] + TRITON_BREAK_GRACE_MS
+        live = now_ms < ad[0] + ad[1] + TRITON_BREAK_GRACE_MS
+        self._why[key] = f"ad cue {int((now_ms - ad[0]) / 1000)}s ago ({int(ad[1] / 1000)}s long), no newer song" + ("" if live else " (expired)")
+        return live
 
     async def _station_in_break(self, st: dict) -> bool:
         if st["kind"] == "triton":
@@ -524,12 +542,15 @@ class MusicBot(commands.Bot):
             song = (icy[0], icy[1])
         self._now["rock"] = (_pretty(song[0]), _pretty(song[1]))
         if time.monotonic() < self._rock_music_until:
+            self._why["rock"] = f"live song marker says a song is playing for {int(self._rock_music_until - time.monotonic())}s more"
             self._song_end["rock"] = time.time() + (self._rock_music_until - time.monotonic() - 5)
             self._song_span["rock"] = None
             return False
         self._song_end["rock"] = latest["endTime"]
         self._song_span["rock"] = (latest["startTime"], latest["endTime"])
-        return time.time() > latest["endTime"] + ROCK_BREAK_GRACE_S
+        over = time.time() - latest["endTime"]
+        self._why["rock"] = (f"last listed song ended {int(over)}s ago" if over > 0 else f"last listed song ends in {int(-over)}s")
+        return over > ROCK_BREAK_GRACE_S
 
     @tasks.loop(seconds=5)
     async def _break_monitor(self):
@@ -545,7 +566,7 @@ class MusicBot(commands.Bot):
                 continue
             self._fails[key] = 0
             if res != self._breaks[key]:
-                log.info("%s: %s", st["name"], "commercial" if res else "music")
+                self._note("%s: %s (%s)", st["name"], "commercial" if res else "music", self._why.get(key, ""))
             self._breaks[key] = res
         if not self._checked:
             self._checked = True
@@ -746,6 +767,25 @@ class MusicBot(commands.Bot):
     @_card_loop.before_loop
     async def _before_card_loop(self):
         await self.wait_until_ready()
+
+    def _breakcheck_embed(self) -> discord.Embed:
+        embed = discord.Embed(title="🩺 Commercial check", color=discord.Color.blurple())
+        for st in STATIONS:
+            key = st["key"]
+            state = {True: "🔴 COMMERCIAL", False: "🟢 music", None: "⚪ unknown"}[self._breaks[key]]
+            song = self._song_text(key) or "–"
+            run = self._runway(key)
+            left = "–" if run == float("inf") else f"{int(run)}s left"
+            here = "▶ " if key == self._current else ""
+            embed.add_field(
+                name=f"{here}{st['name']}: {state}",
+                value=f"{song[:80]}\n{self._why.get(key) or 'not checked yet'} · {left}" + (f" · {self._fails[key]} failed checks" if self._fails[key] else ""),
+                inline=False,
+            )
+        since = int(time.monotonic() - self._last_switch) if self._last_switch else None
+        embed.add_field(name="Recent decisions", value="\n".join(self._events) or "None yet since the last restart.", inline=False)
+        embed.set_footer(text=f"Last switch: {f'{since}s ago' if since is not None else 'none yet'} · checks run every 5s")
+        return embed
 
     def _radio_embed(self) -> discord.Embed:
         cur = STATION_BY_KEY[self._current]
