@@ -14,6 +14,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 import directory as dirmod
+import library as songlib
 import visuals
 from picker import HomeRadioView, clean
 from publicradio import FFMPEG_BEFORE, FFMPEG_OPTIONS, START_WAIT_S, PublicRadio, _Probe, check_stream_url, opus_settings
@@ -66,6 +67,7 @@ STATIONS = [
     },
 ]
 STATION_BY_KEY = {st["key"]: st for st in STATIONS}
+SONG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"     # YouTube links: no protocol whitelist
 
 FFMPEG_RADIO_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -165,6 +167,7 @@ class MusicBot(commands.Bot):
         self.radio_volume = float(os.getenv("RADIO_VOLUME", "1.0"))  # master level, set by /volume
         self._prompted: dict[int, float] = {}  # user id -> last time they got the join prompt
         self.directory = dirmod.Directory()   # searchable US station list for /stations
+        self.library = songlib.Library()      # songs by genre: free-licensed everywhere, popular hits at home
         self.public = PublicRadio(self)       # radio players for servers other than the home server
         self._branding_done = False
         self._tap: visuals.SpectrumTap | None = None
@@ -182,6 +185,16 @@ class MusicBot(commands.Bot):
         self._icy_title: dict[str, str] = {}    # what each station's own stream says it is playing right now
         self._icy_seen: dict[str, float] = {}   # monotonic time that stream last delivered data
         self._icy_tasks: list[asyncio.Task] = []
+        self._songs: list = []          # library songs playing on the home radio (rotation is paused until they finish)
+        self._song_i = 0
+        self._song_by = ""
+        self._song_url = ""
+        self._song_gen = 0              # bumps on every start so a replaced source's end callback is ignored
+        self._song_busy = False         # looking up the next song; keepalive must not restart the radio meanwhile
+        self._song_started = False
+        self._song_began = 0.0
+        self._song_duration = 0
+        self._song_cache: dict[str, tuple[str, int]] = {}    # search text -> (stream url, seconds)
         self._pick = None               # a station someone chose from the directory (pauses the rotation)
         self._pick_url = ""
         self._pick_by = ""
@@ -193,9 +206,11 @@ class MusicBot(commands.Bot):
     async def setup_hook(self):
         self._http = aiohttp.ClientSession()
         self.directory.session = self._http
+        self.library.session = self._http
         await self.public.start()
         await self.load_extension("cogs.music")
         await self.load_extension("cogs.stations")
+        await self.load_extension("cogs.library")
         self.add_view(HomeRadioView(self))      # the controls under the radio card survive restarts
 
         @self.tree.command(name="radio", description="Show the station and song playing now")
@@ -407,8 +422,21 @@ class MusicBot(commands.Bot):
                             log.info("Auto-disconnected from empty channel in %s", before.channel.guild.name)
 
     def _start_playing(self, vc: discord.VoiceClient):
+        self._song_gen += 1         # before stopping, so the old source's end callback is recognised as stale
+        gen = self._song_gen
         if vc.is_playing() or vc.is_paused():
             vc.stop()
+        if self._songs:
+            song = self._songs[self._song_i]
+            self._song_started = False
+            self._song_began = time.time()
+            before = FFMPEG_BEFORE if song.source == "free" else SONG_BEFORE
+            raw = discord.FFmpegPCMAudio(self._song_url, before_options=before, options=FFMPEG_OPTIONS)
+            self._tap = visuals.SpectrumTap(_Probe(raw, lambda: setattr(self, "_song_started", True)))
+            source = discord.PCMVolumeTransformer(self._tap, volume=self._effective_volume())
+            vc.play(source, after=lambda err: self._song_ended(gen, err), **opus_settings(vc.channel))
+            log.info("Radio: playing song %s – %s", song.artist, song.title)
+            return
         if self._pick is not None:
             self._pick_started = False
             raw = discord.FFmpegPCMAudio(self._pick_url, before_options=FFMPEG_BEFORE, options=FFMPEG_OPTIONS)
@@ -421,6 +449,121 @@ class MusicBot(commands.Bot):
             log.info("Radio: playing %s → %s", st["name"], st["url"])
         source = discord.PCMVolumeTransformer(self._tap, volume=self._effective_volume())
         vc.play(source, after=lambda err: log.warning("Stream ended: %s", err) if err else None, **opus_settings(vc.channel))
+
+    # ---- songs from the library: play on the home radio, then the rotation carries on
+    async def _resolve_song(self, song) -> tuple[str, int] | None:
+        """(stream url, seconds) for a song, or None. Free songs have a stream already; hits are found on
+        YouTube. Results are remembered so the next song can be looked up while this one plays."""
+        if song.source == "free":
+            return (song.url, song.duration) if not await check_stream_url(song.url) else None
+        hit = self._song_cache.get(song.query)
+        if hit:
+            return hit
+        from cogs.music import extract_info
+        try:
+            data = await asyncio.wait_for(extract_info(f"ytsearch1:{song.query}"), timeout=25)
+        except Exception as e:
+            log.warning("Could not find %s: %s", song.query, e)
+            return None
+        url = data.get("url") or ((data.get("formats") or [{}])[-1].get("url"))
+        if not url:
+            return None
+        if len(self._song_cache) >= 40:
+            self._song_cache.pop(next(iter(self._song_cache)))
+        self._song_cache[song.query] = (url, int(data.get("duration") or 0))
+        return self._song_cache[song.query]
+
+    async def play_songs(self, member: discord.Member, songs: list) -> tuple[bool, str]:
+        channel, vc = self._radio_vc()
+        if vc is None:
+            return False, "The radio isn't connected right now. Try again in a moment."
+        if not member.voice or member.voice.channel != channel:
+            return False, f"Join {channel.mention} first, then pick a song."
+        now = time.monotonic()
+        if now - self._pick_cooldown.get(member.id, 0) < 4:
+            return False, "Easy there, give it a few seconds before changing again."
+        self._pick_cooldown[member.id] = now
+        before = (self._songs, self._song_i, self._song_by, self._song_url, self._song_duration)
+        self._song_busy = True
+        try:
+            for i, song in enumerate(songs[:4]):          # if the first few can't be found, try the next
+                found = await self._resolve_song(song)
+                if found:
+                    break
+            else:
+                return False, "I couldn't find those songs right now. Try another one."
+            self._songs, self._song_i, self._song_by = list(songs), i, member.display_name
+            self._song_url, self._song_duration = found
+            self._start_playing(vc)
+        finally:
+            self._song_busy = False
+        for _ in range(int(START_WAIT_S / 0.2)):
+            if self._song_started:
+                break
+            await asyncio.sleep(0.2)
+        if not self._song_started:
+            self._songs, self._song_i, self._song_by, self._song_url, self._song_duration = before
+            self._start_playing(vc)
+            return False, f"**{songs[0].title}** isn't playable right now, so I went back to what was on."
+        self._np_key = None
+        self._note("%s started songs: %s", member.display_name, songs[self._song_i].query)
+        await self._update_presence()
+        self._prefetch_next()
+        return True, f"Now playing **{songs[self._song_i].title}** by {songs[self._song_i].artist}"
+
+    def _prefetch_next(self):
+        if len(self._songs) > self._song_i + 1:
+            asyncio.ensure_future(self._resolve_song(self._songs[self._song_i + 1]))
+
+    def _song_ended(self, gen: int, error):
+        """On discord.py's player thread: a song finished (or a replaced source reported in)."""
+        if gen != self._song_gen:
+            return
+        if error:
+            log.warning("Song stream error: %s", error)
+        try:
+            self.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._song_next(gen)))
+        except RuntimeError:
+            pass
+
+    async def _song_next(self, gen: int, skipped: bool = False):
+        """Go to the next song in the list; when the list is finished, hand the radio back."""
+        if gen != self._song_gen or not self._songs:
+            return
+        _, vc = self._radio_vc()
+        if vc is None:
+            return
+        self._song_busy = True
+        try:
+            i = self._song_i + 1
+            found = None
+            while i < len(self._songs) and not found:
+                found = await self._resolve_song(self._songs[i])
+                if not found:
+                    i += 1
+            if gen != self._song_gen:
+                return          # someone changed what's playing while we were looking
+            if not found:
+                self._songs, self._song_i = [], 0
+                self._np_key = None
+                self._start_playing(vc)
+                self._note("Songs finished, back to the radio")
+                return
+            self._song_i, (self._song_url, self._song_duration) = i, found
+            self._start_playing(vc)
+            self._np_key = None
+        finally:
+            self._song_busy = False
+        self._prefetch_next()
+
+    async def skip_song(self, member: discord.Member) -> tuple[bool, str]:
+        channel, vc = self._radio_vc()
+        if not self._songs:
+            return False, "No library songs are playing."
+        if vc is None or not member.voice or member.voice.channel != channel:
+            return False, f"Join {channel.mention} first." if channel else "The radio isn't connected."
+        await self._song_next(self._song_gen, skipped=True)
+        return True, "Skipped."
 
     # ---- picking a station from the directory (the card's menus); the rotation resumes on request
     def _radio_vc(self):
@@ -460,13 +603,14 @@ class MusicBot(commands.Bot):
 
     async def back_to_rotation(self, member: discord.Member) -> tuple[bool, str]:
         channel, vc = self._radio_vc()
-        if self._pick is None:
+        if self._pick is None and not self._songs:
             return False, "Already on the Crüe FM rotation."
         if vc is None:
             return False, "The radio isn't connected right now."
         if not member.voice or member.voice.channel != channel:
             return False, f"Join {channel.mention} first."
         self._pick = None
+        self._songs, self._song_i = [], 0
         self._start_playing(vc)
         self._np_key = None
         self._note("%s went back to the rotation", member.display_name)
@@ -497,8 +641,8 @@ class MusicBot(commands.Bot):
 
     def _reevaluate(self):
         """If the playing station is in a commercial break, move to the next one that's on music."""
-        if self._pick is not None:
-            return          # someone chose a station from the directory; the rotation is paused
+        if self._pick is not None or self._songs:
+            return          # someone chose a station or songs from the directory; the rotation is paused
         keys = [st["key"] for st in STATIONS]
         cur = self._current
         state = self._breaks[cur]
@@ -707,7 +851,10 @@ class MusicBot(commands.Bot):
     async def _update_presence(self):
         """Show the playing station and song as the bot's 'Listening to' status."""
         st = STATION_BY_KEY[self._current]
-        if self._pick is not None:
+        if self._songs:
+            s = self._songs[self._song_i]
+            text = f"{s.artist} – {s.title} · picked by {self._song_by}"
+        elif self._pick is not None:
             text = f"{self._pick.name} · picked by {self._pick_by}"
         elif self._breaks[self._current] is True:
             text = f"Commercial break · {st['name']}"
@@ -823,9 +970,10 @@ class MusicBot(commands.Bot):
         cur = self._current
         st = STATION_BY_KEY[cur]
         pick = self._pick
-        commercial = pick is None and self._breaks[cur] is True
-        song = None if pick else self._now.get(cur)
-        key = ("pick", pick.uuid) if pick else (cur, song, commercial)
+        lib = self._songs[self._song_i] if self._songs else None
+        commercial = pick is None and lib is None and self._breaks[cur] is True
+        song = None if (pick or lib) else self._now.get(cur)
+        key = ("song", lib.uuid) if lib else (("pick", pick.uuid) if pick else (cur, song, commercial))
         if key == self._np_key and now - self._np_last < CARD_REFRESH_S:
             return
         channel = self.get_channel(int(NOW_PLAYING_CHANNEL_ID))
@@ -834,7 +982,16 @@ class MusicBot(commands.Bot):
             log.warning("Now Playing channel %s not found", NOW_PLAYING_CHANNEL_ID)
             return
 
-        if pick:
+        progress = None
+        if lib:
+            self._np_art = await self._fetch_art(lib.artist, lib.title)
+            name, title, artist, note = "Song library", lib.title, lib.artist, ""
+            if self._song_duration:
+                progress = min(1.0, max(0.0, (time.time() - self._song_began) / self._song_duration))
+            more = len(self._songs) - self._song_i - 1
+            description = (f"**{clean(lib.title)}** · {clean(lib.artist)}\nPicked by {clean(self._song_by)}"
+                           + (f" · {more} more queued" if more else "") + " · the rotation is paused. Tap ↩ to bring it back.")
+        elif pick:
             self._np_art = None
             name, title = pick.name, pick.name
             artist = " · ".join(x for x in (pick.place, ", ".join(sorted(pick.genres)[:2])) if x) or "Live radio"
@@ -854,7 +1011,7 @@ class MusicBot(commands.Bot):
         spectrum = list(self._tap.history)[-30:] if self._tap else []
         gif, accent = await asyncio.to_thread(
             visuals.render_banner, self._np_art, name, title, artist,
-            None if (commercial or pick) else self._progress(cur), spectrum, commercial, note,
+            progress if lib else (None if (commercial or pick) else self._progress(cur)), spectrum, commercial, note,
         )
         embed = discord.Embed(
             description=description,
@@ -922,6 +1079,11 @@ class MusicBot(commands.Bot):
         return embed
 
     def _radio_embed(self) -> discord.Embed:
+        if self._songs:
+            s = self._songs[self._song_i]
+            return discord.Embed(title=f"🎵 {clean(s.title)}", color=discord.Color.red(),
+                                 description=f"{clean(s.artist)} · picked by **{clean(self._song_by)}**. The rotation is paused; "
+                                             "use **Back to rotation** under the radio card to resume it.")
         if self._pick is not None:
             embed = discord.Embed(title=f"📻 {clean(self._pick.name)}", description=f"Picked by **{clean(self._pick_by)}**. "
                                   "The Crüe FM rotation is paused; use **Back to rotation** under the radio card to resume it.",
@@ -976,7 +1138,7 @@ class MusicBot(commands.Bot):
 
         if not self._checked:
             return
-        if not vc.is_playing() and not vc.is_paused():
+        if not vc.is_playing() and not vc.is_paused() and not self._song_busy:
             self._start_playing(vc)
 
     @_radio_keepalive.before_loop

@@ -531,7 +531,7 @@ class Remote(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(v.timeout)
         self.assertTrue(v.is_persistent())
         valid(v)
-        self.assertEqual(len({c.custom_id for c in v.children}), 8, "three state menus and five buttons")
+        self.assertEqual(len({c.custom_id for c in v.children}), 10, "three state menus and seven buttons")
 
     async def test_states_can_be_picked_right_in_the_box(self):
         v = PK.RemoteView(self.cog)

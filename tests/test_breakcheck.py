@@ -190,3 +190,126 @@ class StreamTitles(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot._icy_title["drive"], "POLICE - ROXANNE")
         self.assertNotIn("drive", self.bot._icy_seen, "a dropped stream stops counting as live data")
         self.bot._http = None
+
+
+class Silent(B.discord.AudioSource):
+    def __init__(self, url=None, **k):
+        self.url, self.kwargs = url, k
+
+    def read(self):
+        return b"\0" * 3840
+
+
+class HomeSongs(unittest.IsolatedAsyncioTestCase):
+    """Library songs on the home radio: the rotation pauses, songs play in turn, then the radio resumes."""
+
+    async def asyncSetUp(self):
+        import asyncio
+        import types
+        import library as L
+        self.L = L
+        self.bot = B.MusicBot()
+        self.bot.loop = asyncio.get_running_loop()
+        self.channel = types.SimpleNamespace(id=7, mention="#radio", bitrate=64000)
+        self.vc = FakeVC(self.channel)
+        self.channel.guild = types.SimpleNamespace(voice_client=self.vc)
+        self.bot.get_channel = lambda cid: self.channel
+        B.RADIO_CHANNEL_ID = "7"
+        self.member = types.SimpleNamespace(id=1, display_name="Pat", voice=types.SimpleNamespace(channel=self.channel))
+        self.bot._update_presence = AsyncMock()
+        self.songs = [L.Song(str(i), f"Song {i}", "Band", "Rock", L.FREE, url=f"https://s/{i}.mp3", duration=100) for i in range(3)]
+        patcher = unittest.mock.patch.object(B.discord, "FFmpegPCMAudio", Silent)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.resolved = {s.id: (s.url, 100) for s in self.songs}
+        self.bot._resolve_song = AsyncMock(side_effect=lambda s: self.resolved.get(s.id))
+        self.bot._checked = True
+
+    async def asyncTearDown(self):
+        await self.bot.close()
+
+    async def start(self, songs=None):
+        return await self.bot.play_songs(self.member, songs or self.songs)
+
+    async def test_songs_play_and_pause_the_rotation(self):
+        ok, msg = await self.start()
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.bot._songs[self.bot._song_i].title, "Song 0")
+        keys = [s["key"] for s in B.STATIONS]
+        self.bot._breaks = {k: True for k in keys}
+        self.bot._current, self.bot._last_switch = keys[0], 0
+        self.bot._reevaluate()
+        self.assertEqual(self.bot._current, keys[0], "the rotation does not move while songs play")
+        self.assertEqual(self.vc.opus["signal_type"], "music")
+
+    async def test_each_song_end_moves_on_then_the_radio_returns(self):
+        import asyncio
+        await self.start()
+        for expected in (1, 2):
+            self.bot._song_ended(self.bot._song_gen, None)
+            await asyncio.sleep(0.05)
+            self.assertEqual(self.bot._song_i, expected)
+        self.bot._song_ended(self.bot._song_gen, None)
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.bot._songs, [], "list finished: back to the radio")
+
+    async def test_a_replaced_source_cannot_skip_a_song(self):
+        import asyncio
+        await self.start()
+        old_gen = self.bot._song_gen - 1
+        self.bot._song_ended(old_gen, None)
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.bot._song_i, 0)
+
+    async def test_unfindable_songs_are_skipped_and_all_unfindable_is_refused(self):
+        self.resolved.pop("0")
+        ok, msg = await self.start()
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.bot._song_i, 1, "started on the first song it could find")
+        self.resolved.clear()
+        await self.bot.back_to_rotation(self.member)
+        self.bot._pick_cooldown.clear()
+        ok, msg = await self.start()
+        self.assertFalse(ok)
+        self.assertEqual(self.bot._songs, [])
+
+    async def test_a_song_that_will_not_start_restores_the_radio(self):
+        class Dead(Silent):
+            def read(self):
+                return b""
+        with unittest.mock.patch.object(B.discord, "FFmpegPCMAudio", Dead), unittest.mock.patch.object(B, "START_WAIT_S", 0.4):
+            ok, msg = await self.start()
+        self.assertFalse(ok)
+        self.assertEqual(self.bot._songs, [])
+
+    async def test_must_be_in_the_radio_channel_and_back_to_rotation_clears_songs(self):
+        import types
+        self.member.voice = types.SimpleNamespace(channel=types.SimpleNamespace(id=99))
+        ok, msg = await self.start()
+        self.assertFalse(ok)
+        self.assertIn("#radio", msg)
+        self.member.voice = types.SimpleNamespace(channel=self.channel)
+        self.assertTrue((await self.start())[0])
+        ok, msg = await self.bot.back_to_rotation(self.member)
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.bot._songs, [])
+
+    async def test_skip_song(self):
+        ok, msg = await self.bot.skip_song(self.member)
+        self.assertFalse(ok)
+        await self.start()
+        ok, _ = await self.bot.skip_song(self.member)
+        self.assertTrue(ok)
+        self.assertEqual(self.bot._song_i, 1)
+
+    async def test_card_shows_the_song(self):
+        await self.start()
+        msg = unittest.mock.MagicMock()
+        msg.edit = AsyncMock()
+        self.bot._np_message = msg
+        self.bot._fetch_art = AsyncMock(return_value=None)
+        B.NOW_PLAYING_CHANNEL_ID = "7"
+        await self.bot._update_card()
+        desc = msg.edit.await_args.kwargs["embed"].description
+        self.assertIn("Song 0", desc)
+        self.assertIn("Picked by Pat", desc)

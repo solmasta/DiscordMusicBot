@@ -59,7 +59,8 @@ async def now_playing(station, headline: str, by: str | None = None) -> tuple[di
     if png is None:
         quality = " · ".join(x for x in (station.codec, f"{station.bitrate} kbps" if station.bitrate else "") if x)
         try:
-            png = await asyncio.to_thread(visuals.render_station_card, station.name, station.place or "", sorted(station.genres), quality)
+            png = await asyncio.to_thread(visuals.render_station_card, station.name, station.place or "", sorted(station.genres), quality,
+                                          bool(getattr(station, "is_song", False)))
         except Exception:
             return embed, None
         if len(_cards) >= 64:
@@ -73,14 +74,14 @@ async def now_playing(station, headline: str, by: str | None = None) -> tuple[di
 
 
 def station_embed(station, headline: str, detailed: bool = True) -> discord.Embed:
-    embed = discord.Embed(title=f"📻 {headline}", description=f"**{clean(station.name)}**", color=BRAND)
+    embed = discord.Embed(title=f"{'🎵' if getattr(station, 'is_song', False) else '📻'} {headline}", description=f"**{clean(station.name)}**", color=BRAND)
     if not detailed:
         if station.homepage.startswith(("http://", "https://")):
             embed.add_field(name="Website", value=station.homepage[:200], inline=False)
         embed.set_footer(text=FOOTER)
         return embed
     if station.place:
-        embed.add_field(name="Location", value=clean(station.place), inline=True)
+        embed.add_field(name="Artist" if getattr(station, "is_song", False) else "Location", value=clean(station.place), inline=True)
     if station.genres:
         embed.add_field(name="Genre", value=", ".join(sorted(station.genres))[:200], inline=True)
     quality = " · ".join(x for x in (station.codec, f"{station.bitrate} kbps" if station.bitrate else "") if x)
@@ -424,6 +425,14 @@ class HomeRadioView(discord.ui.View):
     async def online(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._cog.open_picker(interaction, state=dirmod.ONLINE)
 
+    @discord.ui.button(label="Songs", emoji="🎵", style=discord.ButtonStyle.secondary, custom_id="crue:home:songs", row=3)
+    async def songs(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.bot.get_cog("SongLibrary").open_library(interaction)
+
+    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="crue:home:skip", row=3)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.bot.get_cog("SongLibrary").skip(interaction)
+
     @discord.ui.button(label="Back to rotation", emoji="↩️", style=discord.ButtonStyle.success, custom_id="crue:home:rotation", row=3)
     async def rotation(self, interaction: discord.Interaction, button: discord.ui.Button):
         ok, message = await self.bot.back_to_rotation(interaction.user)
@@ -462,6 +471,14 @@ class RemoteView(discord.ui.View):
     @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="crue:remote:stop", row=3)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.stop_radio(interaction)
+
+    @discord.ui.button(label="Songs", emoji="🎵", style=discord.ButtonStyle.secondary, custom_id="crue:remote:songs", row=4)
+    async def songs(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.bot.get_cog("SongLibrary").open_library(interaction)
+
+    @discord.ui.button(label="Skip song", emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="crue:remote:skip", row=4)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.bot.get_cog("SongLibrary").skip(interaction)
 
 
 class PanelView(discord.ui.View):

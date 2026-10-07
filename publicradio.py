@@ -128,6 +128,13 @@ class PublicPlayer:
     lost_since: float | None = None
     idle_since: float | None = None
     restarts: list = field(default_factory=list)
+    tracks: list = field(default_factory=list)      # songs queued behind the current one (library mode)
+    track_index: int = 0
+    gen: int = 0                                    # bumps on every (re)start so a stopped source's callback is ignored
+
+    @property
+    def is_library(self) -> bool:
+        return bool(self.tracks)
 
 
 class PublicRadio:
@@ -246,30 +253,29 @@ class PublicRadio:
         return len(humans) == 1 or player.started_by not in humans
 
     # ---- tuning
-    async def tune(self, member: discord.Member, station, text_channel_id: int | None = None) -> tuple[bool, str]:
+    def _check_member(self, member: discord.Member, what: str):
+        """Shared rules for starting anything: (voice channel, current player, None) or (None, None, why not)."""
         guild = member.guild
         voice = member.voice.channel if member.voice else None
         if voice is None:
-            return False, "Join a voice channel first, then pick a station."
+            return None, None, f"Join a voice channel first, then pick a {what}."
         if isinstance(voice, discord.StageChannel):
-            return False, "I can't play in Stage channels yet. Please use a regular voice channel."
+            return None, None, "I can't play in Stage channels yet. Please use a regular voice channel."
         now = time.monotonic()
         if now - self._cooldown.get(member.id, 0) < 4:
-            return False, "Easy there, give it a few seconds before changing again."
+            return None, None, "Easy there, give it a few seconds before changing again."
         existing = self.players.get(guild.id)
         if existing is None and len(self.players) >= MAX_STREAMS:
-            return False, "I'm busy playing in a lot of servers right now. Please try again in a few minutes."
+            return None, None, "I'm busy playing in a lot of servers right now. Please try again in a few minutes."
         if not self.may_control(member, existing):
-            return False, "Someone else is controlling the radio here. Join their voice channel, or ask a server manager."
+            return None, None, "Someone else is controlling the radio here. Join their voice channel, or ask a server manager."
         perms = voice.permissions_for(guild.me)
         if not (perms.connect and perms.speak):
-            return False, f"I need **Connect** and **Speak** permission in {voice.mention}."
+            return None, None, f"I need **Connect** and **Speak** permission in {voice.mention}."
         self._cooldown[member.id] = now
+        return voice, existing, None
 
-        url = await self.bot.directory.resolve_url(station)
-        problem = await check_stream_url(url)
-        if problem:
-            return False, problem
+    async def _connect(self, guild: discord.Guild, voice):
         vc = guild.voice_client
         try:
             if vc is None or not vc.is_connected():
@@ -277,6 +283,21 @@ class PublicRadio:
             elif vc.channel != voice:
                 await vc.move_to(voice)
         except (asyncio.TimeoutError, discord.ClientException, discord.HTTPException):
+            return None
+        return vc
+
+    async def tune(self, member: discord.Member, station, text_channel_id: int | None = None) -> tuple[bool, str]:
+        guild = member.guild
+        voice, existing, problem = self._check_member(member, "station")
+        if problem:
+            return False, problem
+
+        url = await self.bot.directory.resolve_url(station)
+        problem = await check_stream_url(url)
+        if problem:
+            return False, problem
+        vc = await self._connect(guild, voice)
+        if vc is None:
             return False, f"I couldn't join {voice.mention}. Check my permissions and try again."
 
         player = PublicPlayer(guild.id, voice.id, text_channel_id, station, url, member.id,
@@ -297,6 +318,38 @@ class PublicRadio:
         self.changed(guild.id)
         return True, f"Now playing **{station.name}**"
 
+    async def play_songs(self, member: discord.Member, songs: list, text_channel_id: int | None = None) -> tuple[bool, str]:
+        """Play free-licensed songs one after another, starting with the first. Not saved across a
+        restart: songs are a session, unlike a station which is the server's standing radio."""
+        guild = member.guild
+        if not songs:
+            return False, "There are no songs to play."
+        voice, existing, problem = self._check_member(member, "song")
+        if problem:
+            return False, problem
+        problem = await check_stream_url(songs[0].url)
+        if problem:
+            return False, problem
+        vc = await self._connect(guild, voice)
+        if vc is None:
+            return False, f"I couldn't join {voice.mention}. Check my permissions and try again."
+        player = PublicPlayer(guild.id, voice.id, text_channel_id, songs[0], songs[0].url, member.id,
+                              volume=existing.volume if existing else DEFAULT_VOLUME, tracks=list(songs))
+        self.players[guild.id] = player
+        self._play(vc, player)
+        if not await self._wait_started(player):
+            log.info("Song %s did not start in %s", songs[0].title, guild.name)
+            if existing:
+                self.players[guild.id] = existing
+                self._play(vc, existing)
+                return False, f"**{songs[0].title}** isn't available right now, so I kept the previous music playing."
+            await self.stop(guild, "song not available")
+            return False, f"**{songs[0].title}** isn't available right now. Please pick another song."
+        await self.forget(guild.id)         # songs are not resumed after a restart
+        log.info("Playing %d songs in %s starting with %s", len(songs), guild.name, songs[0].title)
+        self.changed(guild.id)
+        return True, f"Now playing **{songs[0].title}**"
+
     @staticmethod
     async def _wait_started(player: PublicPlayer) -> bool:
         deadline = time.monotonic() + START_WAIT_S
@@ -309,6 +362,8 @@ class PublicRadio:
         return False
 
     def _play(self, vc: discord.VoiceClient, player: PublicPlayer):
+        player.gen += 1            # before stopping, so the old source's end callback is recognised as stale
+        gen = player.gen
         if vc.is_playing() or vc.is_paused():
             vc.stop()
         player.ended = player.started = False
@@ -316,13 +371,52 @@ class PublicRadio:
         source = discord.PCMVolumeTransformer(
             _Probe(raw, lambda: setattr(player, "started", True)), volume=player.volume
         )
-        vc.play(source, after=lambda err: self._on_end(player, err), **opus_settings(vc.channel))
+        vc.play(source, after=lambda err: self._on_end(player, err, gen), **opus_settings(vc.channel))
 
-    @staticmethod
-    def _on_end(player: PublicPlayer, error):
+    def _on_end(self, player: PublicPlayer, error, gen: int | None = None):
+        """Runs on discord.py's player thread when a source stops. A source we replaced ourselves
+        (a station change or a skip) reports too, so those are ignored."""
+        if gen is not None and gen != player.gen:
+            return
         if error:
             log.warning("Public stream error in guild %s: %s", player.guild_id, error)
         player.ended = True
+        if player.is_library:
+            try:
+                self.bot.loop.call_soon_threadsafe(self._advance, player)
+            except RuntimeError:
+                pass        # the bot is shutting down
+
+    # ---- song library: a queue of free-licensed songs played one after another
+    def _advance(self, player: PublicPlayer, skipped: bool = False):
+        """Move on to the next song (wrapping around). A song that never started counts as a failure."""
+        if self.players.get(player.guild_id) is not player or not player.is_library:
+            return
+        guild = self.bot.get_guild(player.guild_id)
+        vc = guild.voice_client if guild else None
+        if vc is None or not vc.is_connected():
+            return
+        if not player.started and not skipped:
+            wall = time.time()
+            player.restarts = [t for t in player.restarts if wall - t < RESTART_WINDOW_S]
+            player.restarts.append(wall)
+            if len(player.restarts) >= RESTART_LIMIT:
+                self._spawn(self.stop(guild, "songs keep failing"))
+                self._spawn(self._notify(player, "⚠️ I couldn't play those songs, so I've stopped. Try another genre with `/library`."))
+                return
+        player.track_index = (player.track_index + 1) % len(player.tracks)
+        song = player.tracks[player.track_index]
+        player.station, player.url = song, song.url
+        self._play(vc, player)
+        self.changed(player.guild_id)
+
+    def skip(self, guild_id: int) -> bool:
+        """Skip to the next song. False if the radio isn't playing songs."""
+        player = self.players.get(guild_id)
+        if not player or not player.is_library:
+            return False
+        self._advance(player, skipped=True)
+        return True
 
     def set_volume(self, guild_id: int, volume: float):
         player = self.players.get(guild_id)
@@ -472,6 +566,9 @@ class PublicRadio:
                     await self._notify(player, "👋 Everyone left, so I've stopped the radio. Use `/stations browse` to start again.")
                 continue
             player.idle_since = None
+            if player.ended and player.is_library:
+                self._advance(player)          # normally the end-of-song callback already did this
+                continue
             if player.ended:
                 wall = time.time()
                 player.restarts = [t for t in player.restarts if wall - t < RESTART_WINDOW_S]

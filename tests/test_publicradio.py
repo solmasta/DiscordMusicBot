@@ -377,3 +377,89 @@ class SoundQuality(unittest.TestCase):
             import array
             samples = array.array("h", out[:len(out) // 2 * 2])
             self.assertLess(max(abs(x) for x in samples), 32768 * 0.86, "the limiter keeps peaks below clipping")
+
+
+class SongQueue(unittest.IsolatedAsyncioTestCase):
+    """Free-licensed songs play one after another on a public server."""
+
+    def setUp(self):
+        import library as L
+        self.L = L
+        self.songs = [L.Song(str(i), f"Song {i}", "Band", "Rock", L.FREE, url=f"http://93.184.216.34/s{i}.mp3") for i in range(3)]
+        self.g = make_guild()
+        self.ch = make_channel(self.g, users=(1,))
+        self.g.voice_client = None
+        bot = MagicMock()
+        bot.get_guild = lambda gid: self.g
+        bot.loop = asyncio.get_event_loop_policy().get_event_loop() if False else None
+        self.bot = bot
+        self.radio = P.PublicRadio(bot, store=MagicMock(delete=AsyncMock(), save=AsyncMock(), update_volume=AsyncMock()))
+        self.radio.changed = MagicMock()
+        patcher = mock.patch.object(P.discord, "FFmpegPCMAudio", Silent)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        async def connect(**kw):
+            vc = FakeVC(self.ch)
+            self.g.voice_client = vc
+            return vc
+        self.ch.connect = connect
+
+    async def asyncSetUp(self):
+        self.bot.loop = asyncio.get_running_loop()
+
+    async def start(self):
+        with mock.patch.object(P, "check_stream_url", AsyncMock(return_value=None)):
+            return await self.radio.play_songs(make_member(self.g, 1, self.ch), self.songs)
+
+    async def test_playing_songs_starts_the_first_and_is_not_saved(self):
+        ok, msg = await self.start()
+        self.assertTrue(ok, msg)
+        player = self.radio.players[1]
+        self.assertTrue(player.is_library)
+        self.assertEqual(player.station.title, "Song 0")
+        self.radio.store.delete.assert_awaited()           # a restart must not resurrect a song session
+        self.radio.store.save.assert_not_awaited()
+
+    async def test_a_finished_song_moves_on_and_wraps_around(self):
+        await self.start()
+        player, vc = self.radio.players[1], self.g.voice_client
+        for expected in ("Song 1", "Song 2", "Song 0"):
+            vc.after(None)                                   # discord.py reports the song ended
+            await asyncio.sleep(0.02)
+            self.assertEqual(player.station.title, expected)
+            self.assertEqual(vc.source.original.inner.kwargs.get("before_options"), P.FFMPEG_BEFORE)
+
+    async def test_a_source_we_replaced_cannot_trigger_a_skip(self):
+        await self.start()
+        player, vc = self.radio.players[1], self.g.voice_client
+        stale = vc.after                                     # callback of song 0
+        self.assertTrue(self.radio.skip(1))
+        self.assertEqual(player.station.title, "Song 1")
+        stale(None)                                          # the replaced source reports in late
+        await asyncio.sleep(0.02)
+        self.assertEqual(player.station.title, "Song 1", "a stale end must not skip another song")
+
+    async def test_skip_only_applies_to_songs(self):
+        self.assertFalse(self.radio.skip(1))
+        await self.start()
+        self.assertTrue(self.radio.skip(1))
+
+    async def test_songs_that_keep_failing_stop_the_session(self):
+        await self.start()
+        player, vc = self.radio.players[1], self.g.voice_client
+        player.started = False
+        stop = AsyncMock()
+        self.radio.stop = stop
+        self.radio._notify = AsyncMock()
+        for _ in range(P.RESTART_LIMIT):
+            player.started = False
+            self.radio._advance(player)
+        await asyncio.sleep(0.02)
+        stop.assert_awaited()
+
+    async def test_unsafe_song_url_is_refused(self):
+        with mock.patch.object(P, "check_stream_url", AsyncMock(return_value="That address isn't allowed")):
+            ok, msg = await self.radio.play_songs(make_member(self.g, 1, self.ch), self.songs)
+        self.assertFalse(ok)
+        self.assertNotIn(1, self.radio.players)

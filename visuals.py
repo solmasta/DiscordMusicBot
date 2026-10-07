@@ -284,7 +284,7 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int, lines: int) ->
     return [_fit_text(draw, line, font, max_w) for line in out if line]
 
 
-def render_station_card(name: str, place: str = "", genres: tuple[str, ...] | list[str] = (), quality: str = "") -> bytes:
+def render_station_card(name: str, place: str = "", genres: tuple[str, ...] | list[str] = (), quality: str = "", song: bool = False) -> bytes:
     """A 720x240 PNG: a tuning dial on the left, the station's name, place and genres on the right."""
     accent = station_accent(name)
     dim = tuple(int(c * 0.16) for c in accent)
@@ -313,17 +313,18 @@ def render_station_card(name: str, place: str = "", genres: tuple[str, ...] | li
     ang = math.radians(200 + pos * 140)
     d.line((cx, cy + 18, cx + (r - 14) * math.cos(ang), cy + 18 + (r - 14) * math.sin(ang) + 0), fill=(255, 255, 255), width=3)
     d.ellipse((cx - 7, cy + 11, cx + 7, cy + 25), fill=accent)
-    label = freq or "FM"
-    d.text((cx, cy + 52), label, font=_font(30 if freq else 26), fill=(240, 240, 248), anchor="mm")
-    d.text((cx, cy + 74), "MHz" if freq else "RADIO", font=_font(12), fill=(150, 150, 168), anchor="mm")
+    label = "♪" if song else (freq or "FM")
+    d.text((cx, cy + 52), label, font=_font(30 if (freq or song) else 26), fill=(240, 240, 248), anchor="mm")
+    d.text((cx, cy + 74), "TRACK" if song else ("MHz" if freq else "RADIO"), font=_font(12), fill=(150, 150, 168), anchor="mm")
 
     # --- text
     tx, max_w = 236, CARD_W - 236 - 28
     chip_font = _font(14)
-    d.rounded_rectangle((tx, 28, tx + 78, 50), 11, fill=accent)
-    d.text((tx + 39, 39), "● LIVE", font=chip_font, fill=(12, 12, 18), anchor="mm")
+    chip_w = 108 if song else 78
+    d.rounded_rectangle((tx, 28, tx + chip_w, 50), 11, fill=accent)
+    d.text((tx + chip_w // 2, 39), "♪ PLAYING" if song else "● LIVE", font=chip_font, fill=(12, 12, 18), anchor="mm")
     if quality:
-        d.text((tx + 92, 39), quality, font=_font(13), fill=(165, 165, 182), anchor="lm")
+        d.text((tx + chip_w + 14, 39), quality, font=_font(13), fill=(165, 165, 182), anchor="lm")
     title_font = _font(34)
     y = 68
     for line in _wrap(d, name or "Radio", title_font, max_w, 2):
