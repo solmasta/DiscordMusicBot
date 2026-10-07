@@ -7,7 +7,8 @@ from discord import app_commands
 from discord.ext import commands
 
 import directory as dirmod
-from picker import FOOTER, GuidedPicker, PanelView, clean, station_embed  # noqa: F401  (station_embed is re-exported)
+from picker import (BRAND, FOOTER, GuidedPicker, PanelView, RemoteView, brand_file, clean,  # noqa: F401  (station_embed is re-exported)
+                    now_playing, station_embed)
 
 log = logging.getLogger("stations")
 
@@ -24,6 +25,7 @@ class Stations(commands.Cog):
     async def cog_load(self):
         # Re-attach the permanent panel buttons so panels posted before a restart keep working.
         self.bot.add_view(PanelView(self))
+        self.bot.add_view(RemoteView(self))
 
     # ---- helpers
     async def _gate(self, interaction: discord.Interaction) -> bool:
@@ -39,6 +41,12 @@ class Stations(commands.Cog):
             return False
         return True
 
+    @staticmethod
+    async def _send_picker(interaction: discord.Interaction, picker: GuidedPicker):
+        icon = brand_file()
+        extra = {"file": icon} if icon else {}
+        await interaction.response.send_message(embed=picker.embed(), view=picker, ephemeral=True, **extra)
+
     async def open_picker(self, interaction: discord.Interaction, state: str | None = None, city: str | None = None):
         """Open the guided picker privately for whoever asked, optionally already on a state or city."""
         if not await self._gate(interaction):
@@ -47,7 +55,7 @@ class Stations(commands.Cog):
         picker = GuidedPicker(self, interaction.user.id, saved_area=area)
         if state:
             picker.show_stations(state, city) if city else picker.show_areas(state)
-        await interaction.response.send_message(embed=picker.embed(), view=picker, ephemeral=True)
+        await self._send_picker(interaction, picker)
 
     async def show_now(self, interaction: discord.Interaction):
         if not await self._gate(interaction):
@@ -56,7 +64,24 @@ class Stations(commands.Cog):
         if not player:
             await interaction.response.send_message("Nothing is playing. Use `/stations browse` or the **Find a station** button.", ephemeral=True)
             return
-        await interaction.response.send_message(embed=station_embed(player.station, "Now playing"))
+        await interaction.response.defer()
+        embed, card = await now_playing(player.station, "Now playing")
+        extra = {"file": card} if card else {}
+        await interaction.followup.send(embed=embed, view=RemoteView(self), **extra)
+
+    async def nudge_volume(self, interaction: discord.Interaction, delta: float):
+        if not await self._gate(interaction):
+            return
+        player = self.bot.public.players.get(interaction.guild_id)
+        if not player:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        if not self.bot.public.may_control(interaction.user, player):
+            await interaction.response.send_message("Someone else is controlling the radio here.", ephemeral=True)
+            return
+        level = min(1.0, max(0.05, round(player.volume + delta, 2)))
+        self.bot.public.set_volume(interaction.guild_id, level)
+        await interaction.response.send_message(f"{'🔊' if delta > 0 else '🔉'} Volume **{round(level * 100)}%**", ephemeral=True)
 
     async def stop_radio(self, interaction: discord.Interaction):
         if not await self._gate(interaction):
@@ -130,7 +155,7 @@ class Stations(commands.Cog):
             picker.genre = genre.value
             picker.stations = [s for s in picker.base if genre.value in s.genres]
             picker._render()
-        await interaction.response.send_message(embed=picker.embed(), view=picker, ephemeral=True)
+        await self._send_picker(interaction, picker)
 
     @stations.command(name="search", description="Search by station name, call letters, frequency or genre")
     @app_commands.describe(query="e.g. WLS, 94.7, classic rock, jazz", state="Limit to one state (optional)")
@@ -144,7 +169,7 @@ class Stations(commands.Cog):
             return
         picker = GuidedPicker(self, interaction.user.id, saved_area=self.bot.public.area_for(interaction.user.id))
         picker.show_results(found, f"Results for “{query}”")
-        await interaction.response.send_message(embed=picker.embed(), view=picker, ephemeral=True)
+        await self._send_picker(interaction, picker)
 
     @stations.command(name="now", description="Show what's playing in this server")
     async def now(self, interaction: discord.Interaction):
@@ -180,10 +205,14 @@ class Stations(commands.Cog):
             title="📻 Radio from where you live",
             description="Tap **Find a station**, pick your state and city, then choose a station.\n"
                         "Join a voice channel first and I'll play it for you.",
-            color=discord.Color.red(),
+            color=BRAND,
         )
         embed.set_footer(text=FOOTER)
-        await interaction.response.send_message(embed=embed, view=PanelView(self))
+        icon = brand_file()
+        extra = {"file": icon} if icon else {}
+        if icon:
+            embed.set_thumbnail(url="attachment://icon.png")
+        await interaction.response.send_message(embed=embed, view=PanelView(self), **extra)
 
     @stations.command(name="forget", description="Forget the area I remembered for you")
     async def forget(self, interaction: discord.Interaction):

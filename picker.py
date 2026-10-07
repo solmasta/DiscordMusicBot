@@ -1,14 +1,26 @@
 """Guided station picker. No typing needed: one private message that changes as you tap
 (state -> area -> genre -> station), plus a search box and a permanent panel with buttons."""
+import asyncio
+import io
 import math
+import os
 
 import discord
 
 import directory as dirmod
+import visuals
 
 PAGE = 25   # Discord allows at most 25 options in one select menu
 FOOTER = "Station list: Radio Browser (radio-browser.info) · Streams belong to their stations"
 ALL = "*"
+BRAND = discord.Color.from_rgb(230, 57, 70)
+ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.png")
+GENRE_EMOJI = {
+    "Rock": "🎸", "Classic Rock": "🎸", "Alternative": "🎧", "Metal": "🤘", "Pop / Top 40": "🎤",
+    "Country": "🤠", "Hip Hop / R&B": "🎤", "Jazz": "🎷", "Classical": "🎻", "News / Talk": "🗞️",
+    "Sports": "🏟️", "Christian / Gospel": "🙏", "Latin": "💃", "Oldies": "📼", "Electronic": "🎛️",
+    "Blues / Folk": "🪕",
+}
 
 
 def clean(text: str) -> str:
@@ -19,8 +31,54 @@ def count(n: int) -> str:
     return f"{n:,} station{'' if n == 1 else 's'}"
 
 
-def station_embed(station, headline: str) -> discord.Embed:
-    embed = discord.Embed(title=f"📻 {headline}", description=f"**{clean(station.name)}**", color=discord.Color.red())
+def genre_emoji(station) -> str:
+    for g in sorted(station.genres):
+        if g in GENRE_EMOJI:
+            return GENRE_EMOJI[g]
+    return "📻"
+
+
+def brand_file() -> discord.File | None:
+    """The Crüe FM icon, attached so embeds can show it as a thumbnail."""
+    try:
+        return discord.File(ICON_PATH, filename="icon.png")
+    except OSError:
+        return None
+
+
+_cards: dict[str, bytes] = {}
+
+
+async def now_playing(station, headline: str, by: str | None = None) -> tuple[discord.Embed, discord.File | None]:
+    """The 'now playing' message: an embed with a drawn station card (cached per station)."""
+    embed = station_embed(station, headline)
+    if by:
+        embed.set_author(name=f"Tuned by {by}")
+    key = station.uuid
+    png = _cards.get(key)
+    if png is None:
+        quality = " · ".join(x for x in (station.codec, f"{station.bitrate} kbps" if station.bitrate else "") if x)
+        try:
+            png = await asyncio.to_thread(visuals.render_station_card, station.name, station.place or "", sorted(station.genres), quality)
+        except Exception:
+            return embed, None
+        if len(_cards) >= 64:
+            _cards.pop(next(iter(_cards)))
+        _cards[key] = png
+    embed = station_embed(station, headline, detailed=False)     # the card already shows place, genre and quality
+    if by:
+        embed.set_author(name=f"Tuned by {by}")
+    embed.set_image(url="attachment://station.png")
+    return embed, discord.File(io.BytesIO(png), filename="station.png")
+
+
+def station_embed(station, headline: str, detailed: bool = True) -> discord.Embed:
+    embed = discord.Embed(title=f"📻 {headline}", description=f"**{clean(station.name)}**", color=BRAND)
+    if not detailed:
+        if station.homepage.startswith(("http://", "https://")):
+            embed.add_field(name="Website", value=station.homepage[:200], inline=False)
+        embed.set_footer(text=FOOTER)
+        return embed
     if station.place:
         embed.add_field(name="Location", value=clean(station.place), inline=True)
     if station.genres:
@@ -127,19 +185,21 @@ class GuidedPicker(discord.ui.View):
             if self.saved_area:
                 lines.append(f"📍 Last time: **{clean(self._area_label(self.saved_area))}**, use the green button for one tap.")
             lines.append("🎧 Join a voice channel first, then tap a station to play it.")
-            return discord.Embed(title="📻 Find a station", description="\n".join(lines), color=discord.Color.red())
+            embed = discord.Embed(title="📻 Find a station", description="\n".join(lines), color=BRAND)
+            embed.set_thumbnail(url="attachment://icon.png")
+            return embed
         if self.screen == "areas":
             name = dirmod.STATES[self.state]
             return discord.Embed(
-                title=f"📻 {name}", color=discord.Color.red(),
+                title=f"📻 {name}", color=BRAND,
                 description=f"Pick your city or area, or choose **All of {name}**.",
             )
         lines = []
         for i, s in enumerate(self.current(), start=self.page * PAGE + 1):
             where = f" · {clean(s.place)}" if self._show_place(s) else ""
-            lines.append(f"`{i:>2}.` {clean(s.name)[:60]}{where}")
+            lines.append(f"`{i:>2}.` {genre_emoji(s)} {clean(s.name)[:60]}{where}")
         title = self.title + (f" · {self.genre}" if self.genre else "")
-        embed = discord.Embed(title=f"📻 {title}", description="\n".join(lines) or "No stations.", color=discord.Color.red())
+        embed = discord.Embed(title=f"📻 {title}", description="\n".join(lines) or "No stations.", color=BRAND)
         embed.set_footer(text=f"{count(len(self.stations))} · page {self.page + 1}/{self.pages} · {FOOTER}")
         return embed
 
@@ -196,7 +256,7 @@ class GuidedPicker(discord.ui.View):
         if counts:
             options = [discord.SelectOption(label="Any genre", value=ALL, description=count(len(self.base)), default=self.genre is None)]
             options += [
-                discord.SelectOption(label=g, value=g, description=count(n), default=g == self.genre)
+                discord.SelectOption(label=g, value=g, description=count(n), default=g == self.genre, emoji=GENRE_EMOJI.get(g))
                 for g, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:24]
             ]
             self._select(f"Genre: {self.genre or 'Any'}", options, self._genre_picked, row=row)
@@ -204,7 +264,7 @@ class GuidedPicker(discord.ui.View):
         options = []
         for s in self.current():
             bits = ([s.place] if self._show_place(s) else []) + ([", ".join(sorted(s.genres)[:2])] if s.genres else []) + ([f"{s.bitrate}k"] if s.bitrate else [])
-            options.append(discord.SelectOption(label=s.name[:100] or "Station", value=s.uuid[:100],
+            options.append(discord.SelectOption(label=s.name[:100] or "Station", value=s.uuid[:100], emoji=genre_emoji(s),
                                                 description=" · ".join(b for b in bits if b)[:100] or None))
         if options:
             self._select("Tap a station to play it in your voice channel…", options, self._station_picked, row=row)
@@ -288,18 +348,43 @@ class GuidedPicker(discord.ui.View):
         if self.state in dirmod.STATES:
             await self.cog.bot.public.remember_area(interaction.user.id, self.state, self.city)
             self.saved_area = (self.state, self.city)
-        embed = station_embed(station, "Now playing")
-        embed.set_author(name=f"Tuned by {interaction.user.display_name}")
+        embed, card = await now_playing(station, "Now playing", by=interaction.user.display_name)
         player = self.cog.bot.public.players.get(interaction.guild_id)
         tip = ""
         if player is not None and getattr(player, "volume", 1) <= 0.5:
-            tip = (f"\n🔈 Volume starts low ({round(player.volume * 100)}%). To raise it just for you, right-click the bot "
-                   "in the voice channel → **User Volume**; for everyone use `/stations volume`.")
+            tip = (f"\n🔈 Volume starts low ({round(player.volume * 100)}%). Use the 🔊 button to raise it for everyone, or "
+                   "right-click the bot in the voice channel → **User Volume** to raise it just for you.")
+        extra = {"file": card} if card else {}
         try:
-            await interaction.channel.send(embed=embed)
-            await interaction.followup.send("✅ Tuned in! Use `/stations stop` to stop." + tip, ephemeral=True)
+            await interaction.channel.send(embed=embed, view=RemoteView(self.cog), **extra)
+            await interaction.followup.send("✅ Tuned in!" + tip, ephemeral=True)
         except (discord.HTTPException, AttributeError):
-            await interaction.followup.send(content=tip.strip() or None, embed=embed, ephemeral=True)
+            await interaction.followup.send(content=tip.strip() or None, embed=embed, ephemeral=True, **extra)
+
+
+class RemoteView(discord.ui.View):
+    """Tap-to-control buttons under the Now Playing card. Permanent, like the panel, so they keep
+    working after a restart; the cog applies the same who-may-control rules as the slash commands."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Change station", emoji="📻", style=discord.ButtonStyle.primary, custom_id="crue:remote:change")
+    async def change(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.open_picker(interaction)
+
+    @discord.ui.button(emoji="🔉", style=discord.ButtonStyle.secondary, custom_id="crue:remote:down")
+    async def quieter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.nudge_volume(interaction, -0.1)
+
+    @discord.ui.button(emoji="🔊", style=discord.ButtonStyle.secondary, custom_id="crue:remote:up")
+    async def louder(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.nudge_volume(interaction, +0.1)
+
+    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="crue:remote:stop")
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.stop_radio(interaction)
 
 
 class PanelView(discord.ui.View):

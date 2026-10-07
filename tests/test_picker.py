@@ -288,7 +288,7 @@ class Playing(unittest.IsolatedAsyncioTestCase):
         text = i.followup.send.await_args.args[0]
         self.assertIn("Volume starts low (40%)", text)
         self.assertIn("User Volume", text)
-        self.assertIn("/stations volume", text)
+        self.assertIn("🔊 button", text)
         self.bot.public.players = {5: types.SimpleNamespace(volume=0.9)}
         i = await self.picked(v, v.stations[1].uuid)
         self.assertNotIn("starts low", i.followup.send.await_args.args[0], "no tip when the volume is already high")
@@ -417,8 +417,9 @@ class Panel(unittest.IsolatedAsyncioTestCase):
 
     async def test_cog_registers_the_panel_at_startup(self):
         await self.cog.cog_load()
-        added = self.bot.add_view.call_args.args[0]
-        self.assertIsInstance(added, PK.PanelView)
+        added = [c.args[0] for c in self.bot.add_view.call_args_list]
+        self.assertTrue(any(isinstance(a, PK.PanelView) for a in added))
+        self.assertTrue(any(isinstance(a, PK.RemoteView) for a in added), "the remote under Now Playing survives restarts")
 
     async def test_buttons_open_the_picker_show_now_playing_and_stop(self):
         v = PK.PanelView(self.cog)
@@ -462,3 +463,100 @@ def app_commands_choice(value):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Card(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.cog, self.bot = make_cog(world_records())
+        self.station = self.bot.directory.stations[0]
+
+    def test_card_renders_a_png_for_odd_names(self):
+        import io
+        from PIL import Image
+        import visuals
+        for name, place, genres in [("WXRT 93.1 FM Chicago", "Chicago, IL", ["Rock"]), ("", "", []),
+                                    ("Ünïcödé Radio 🎸 " * 6, "Somewhere " * 12, ["A", "B", "C", "D"])]:
+            png = visuals.render_station_card(name, place, genres, "MP3 · 128 kbps")
+            self.assertEqual(Image.open(io.BytesIO(png)).size, (visuals.CARD_W, visuals.CARD_H))
+
+    def test_each_station_gets_its_own_stable_colour_and_dial_position(self):
+        import visuals
+        self.assertEqual(visuals.station_accent("WXRT"), visuals.station_accent("wxrt"))
+        self.assertNotEqual(visuals.station_accent("WXRT"), visuals.station_accent("KROQ"))
+        self.assertEqual(visuals.find_frequency("WXRT 93.1 FM"), "93.1")
+        self.assertIsNone(visuals.find_frequency("Smooth Jazz Online"))
+
+    async def test_now_playing_attaches_the_card_and_keeps_the_embed_short(self):
+        embed, card = await PK.now_playing(self.station, "Now playing", by="Pat")
+        self.assertEqual(card.filename, "station.png")
+        self.assertEqual(embed.image.url, "attachment://station.png")
+        self.assertEqual(embed.author.name, "Tuned by Pat")
+        self.assertNotIn("Location", [f.name for f in embed.fields], "the card already shows the place")
+
+    async def test_now_playing_falls_back_to_the_text_embed_if_drawing_fails(self):
+        from unittest.mock import patch
+        PK._cards.clear()
+        with patch("visuals.render_station_card", side_effect=ValueError("boom")):
+            embed, card = await PK.now_playing(self.station, "Now playing")
+        self.assertIsNone(card)
+        self.assertIn("Location", [f.name for f in embed.fields])
+
+    def test_every_genre_has_an_emoji_and_menus_show_them(self):
+        self.assertEqual(set(PK.GENRE_EMOJI), set(D.GENRES))
+        v = PK.GuidedPicker(self.cog, 1)
+        v.show_stations("IL", "Chicago")
+        valid(v)
+        station_select = [c for c in v.children if isinstance(c, discord.ui.Select)][-1]
+        self.assertTrue(all(o.emoji for o in station_select.options))
+        self.assertIn(PK.genre_emoji(v.stations[0]), v.embed().description)
+
+    def test_the_first_screen_shows_the_brand_icon(self):
+        v = PK.GuidedPicker(self.cog, 1)
+        self.assertEqual(v.embed().thumbnail.url, "attachment://icon.png")
+        self.assertIsNotNone(PK.brand_file())
+
+
+class Remote(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.cog, self.bot = make_cog(world_records())
+        self.bot.public.may_control = MagicMock(return_value=True)
+        self.bot.public.set_volume = MagicMock()
+        self.bot.public.players = {5: types.SimpleNamespace(volume=0.4, station=self.bot.directory.stations[0])}
+
+    def test_remote_is_permanent_and_valid(self):
+        v = PK.RemoteView(self.cog)
+        self.assertIsNone(v.timeout)
+        self.assertTrue(v.is_persistent())
+        valid(v)
+        self.assertEqual(len({c.custom_id for c in v.children}), 4)
+
+    async def test_volume_buttons_step_by_ten_and_clamp(self):
+        i = interaction()
+        await self.cog.nudge_volume(i, +0.1)
+        self.bot.public.set_volume.assert_called_with(5, 0.5)
+        self.bot.public.players[5].volume = 0.97
+        await self.cog.nudge_volume(interaction(), +0.1)
+        self.bot.public.set_volume.assert_called_with(5, 1.0)
+        self.bot.public.players[5].volume = 0.07
+        await self.cog.nudge_volume(interaction(), -0.1)
+        self.bot.public.set_volume.assert_called_with(5, 0.05)
+
+    async def test_volume_buttons_respect_who_may_control(self):
+        self.bot.public.may_control.return_value = False
+        i = interaction()
+        await self.cog.nudge_volume(i, +0.1)
+        self.bot.public.set_volume.assert_not_called()
+        self.assertIn("Someone else", i.response.send_message.await_args.args[0])
+
+    async def test_volume_button_with_nothing_playing(self):
+        self.bot.public.players = {}
+        i = interaction()
+        await self.cog.nudge_volume(i, +0.1)
+        self.assertIn("Nothing is playing", i.response.send_message.await_args.args[0])
+
+    async def test_now_command_posts_the_card_with_the_remote(self):
+        i = interaction()
+        await self.cog.show_now(i)
+        kw = i.followup.send.await_args.kwargs
+        self.assertIsInstance(kw["view"], PK.RemoteView)
+        self.assertEqual(kw["file"].filename, "station.png")

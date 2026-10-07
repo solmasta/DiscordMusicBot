@@ -184,8 +184,11 @@ class MusicBot(commands.Bot):
                     await interaction.response.send_message(
                         "Nothing is playing here yet. Use `/stations browse` to find a station from your area.", ephemeral=True)
                     return
-                from cogs.stations import station_embed
-                await interaction.response.send_message(embed=station_embed(player.station, "Now playing"))
+                from cogs.stations import now_playing, RemoteView
+                await interaction.response.defer()
+                embed, card = await now_playing(player.station, "Now playing")
+                extra = {"file": card} if card else {}
+                await interaction.followup.send(embed=embed, view=RemoteView(self.get_cog("Stations")), **extra)
                 return
             await interaction.response.send_message(embed=self._radio_embed())
 

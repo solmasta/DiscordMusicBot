@@ -249,3 +249,96 @@ def looks_like(current: bytes, our_file: str, size: tuple[int, int]) -> bool:
     except Exception:
         return False
     return float(np.abs(np.asarray(a, dtype=int) - np.asarray(b, dtype=int)).mean()) < 6.0
+
+
+# ---- public-server station card (static, so it costs almost nothing to draw)
+CARD_W, CARD_H = 720, 240
+_FREQ = __import__("re").compile(r"(?<!\d)(8[7-9]|9\d|10[0-8])\.(\d)(?!\d)")
+
+
+def station_accent(name: str) -> tuple[int, int, int]:
+    """A stable, vivid colour per station, so each one looks like itself."""
+    h = int.from_bytes(__import__("hashlib").sha1(name.lower().encode()).digest()[:2], "big") / 65535
+    r, g, b = colorsys.hsv_to_rgb(h, 0.68, 0.95)
+    return int(r * 255), int(g * 255), int(b * 255)
+
+
+def find_frequency(name: str) -> str | None:
+    m = _FREQ.search(name or "")
+    return f"{m.group(1)}.{m.group(2)}" if m else None
+
+
+def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int, lines: int) -> list[str]:
+    words, out, cur = text.split(), [], ""
+    for w in words:
+        trial = f"{cur} {w}".strip()
+        if draw.textlength(trial, font=font) <= max_w or not cur:
+            cur = trial
+        else:
+            out.append(cur)
+            cur = w
+    out.append(cur)
+    if len(out) > lines:
+        out = out[:lines]
+        out[-1] = _fit_text(draw, out[-1] + " …", font, max_w)
+    return [_fit_text(draw, line, font, max_w) for line in out if line]
+
+
+def render_station_card(name: str, place: str = "", genres: tuple[str, ...] | list[str] = (), quality: str = "") -> bytes:
+    """A 720x240 PNG: a tuning dial on the left, the station's name, place and genres on the right."""
+    accent = station_accent(name)
+    dim = tuple(int(c * 0.16) for c in accent)
+    im = Image.new("RGB", (CARD_W, CARD_H))
+    px = ImageDraw.Draw(im)
+    for x in range(CARD_W):                    # horizontal gradient from a tinted dark to near black
+        t = x / CARD_W
+        px.line([(x, 0), (x, CARD_H)], fill=tuple(int(a * (1 - t) + b * t) for a, b in zip((dim[0] + 14, dim[1] + 14, dim[2] + 20), (12, 12, 18))))
+    base = im.convert("RGBA")
+    d = ImageDraw.Draw(base)
+
+    # --- the dial
+    cx, cy, r = 118, 120, 84
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(10, 10, 16), outline=accent, width=4)
+    for i in range(0, 41):                                   # tick marks around the upper arc
+        ang = math.radians(200 + i * (140 / 40))
+        long = i % 5 == 0
+        r1, r2 = r - (22 if long else 14), r - 6
+        d.line((cx + r1 * math.cos(ang), cy + r1 * math.sin(ang), cx + r2 * math.cos(ang), cy + r2 * math.sin(ang)),
+               fill=accent if long else (90, 90, 108), width=3 if long else 2)
+    freq = find_frequency(name)
+    if freq:                                                  # the needle points at the real dial position
+        pos = min(1.0, max(0.0, (float(freq) - 87.5) / 20.5))
+    else:
+        pos = int.from_bytes(__import__("hashlib").sha1(name.lower().encode()).digest()[2:3], "big") / 255
+    ang = math.radians(200 + pos * 140)
+    d.line((cx, cy + 18, cx + (r - 14) * math.cos(ang), cy + 18 + (r - 14) * math.sin(ang) + 0), fill=(255, 255, 255), width=3)
+    d.ellipse((cx - 7, cy + 11, cx + 7, cy + 25), fill=accent)
+    label = freq or "FM"
+    d.text((cx, cy + 52), label, font=_font(30 if freq else 26), fill=(240, 240, 248), anchor="mm")
+    d.text((cx, cy + 74), "MHz" if freq else "RADIO", font=_font(12), fill=(150, 150, 168), anchor="mm")
+
+    # --- text
+    tx, max_w = 236, CARD_W - 236 - 28
+    chip_font = _font(14)
+    d.rounded_rectangle((tx, 28, tx + 78, 50), 11, fill=accent)
+    d.text((tx + 39, 39), "● LIVE", font=chip_font, fill=(12, 12, 18), anchor="mm")
+    if quality:
+        d.text((tx + 92, 39), quality, font=_font(13), fill=(165, 165, 182), anchor="lm")
+    title_font = _font(34)
+    y = 68
+    for line in _wrap(d, name or "Radio", title_font, max_w, 2):
+        d.text((tx, y), line, font=title_font, fill=(255, 255, 255))
+        y += 42
+    if place:
+        d.text((tx, CARD_H - 70), _fit_text(d, place, _font(20), max_w), font=_font(20), fill=(205, 205, 220))
+    chip_x = tx
+    for g in list(genres)[:3]:
+        gw = int(d.textlength(g, font=_font(14))) + 20
+        if chip_x + gw > tx + max_w:
+            break
+        d.rounded_rectangle((chip_x, CARD_H - 42, chip_x + gw, CARD_H - 18), 12, outline=accent, width=2)
+        d.text((chip_x + gw / 2, CARD_H - 30), g, font=_font(14), fill=(235, 235, 245), anchor="mm")
+        chip_x += gw + 8
+    buf = io.BytesIO()
+    base.convert("RGB").save(buf, "PNG", optimize=True)
+    return buf.getvalue()
