@@ -121,6 +121,7 @@ class PublicRadio:
         self.players: dict[int, PublicPlayer] = {}
         self._cooldown: dict[int, float] = {}
         self._saved: dict[int, SavedRadio] = {}     # what is stored, so joins don't need a database read
+        self._areas: dict[int, tuple[str, str | None]] = {}   # listener -> (state, city) they last picked from
         self._resuming: set[int] = set()
         self._resumed = False
         self._tasks: set[asyncio.Task] = set()
@@ -132,7 +133,8 @@ class PublicRadio:
         try:
             await self.store.open()
             self._saved = {row.guild_id: row for row in await self.store.all()}
-            log.info("Loaded saved radio settings for %d server(s)", len(self._saved))
+            self._areas = await self.store.all_areas()
+            log.info("Loaded saved radio settings for %d server(s) and %d listener area(s)", len(self._saved), len(self._areas))
         except Exception as e:
             log.error("Saved settings are unavailable (%s); the radio will work but won't be remembered", e)
 
@@ -158,6 +160,26 @@ class PublicRadio:
             await self.store.update_volume(guild_id, volume)
         except Exception as e:
             log.warning("Could not save the volume for server %s: %s", guild_id, e)
+
+    def area_for(self, user_id: int) -> tuple[str, str | None] | None:
+        return self._areas.get(user_id)
+
+    async def remember_area(self, user_id: int, state: str, city: str | None):
+        if self._areas.get(user_id) == (state, city):
+            return
+        self._areas[user_id] = (state, city)
+        try:
+            await self.store.save_area(user_id, state, city)
+        except Exception as e:
+            log.warning("Could not save a listener's area: %s", e)
+
+    async def forget_area(self, user_id: int) -> bool:
+        had = self._areas.pop(user_id, None) is not None
+        try:
+            await self.store.delete_area(user_id)
+        except Exception as e:
+            log.warning("Could not delete a listener's area: %s", e)
+        return had
 
     async def forget(self, guild_id: int):
         """Drop a server's saved radio (it was stopped on purpose, the bot was removed, or it can't resume)."""

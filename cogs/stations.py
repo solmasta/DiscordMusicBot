@@ -7,116 +7,12 @@ from discord import app_commands
 from discord.ext import commands
 
 import directory as dirmod
+from picker import FOOTER, GuidedPicker, PanelView, clean, station_embed  # noqa: F401  (station_embed is re-exported)
 
 log = logging.getLogger("stations")
 
 HOME_GUILD_ID = os.getenv("GUILD_ID")
-PAGE = 25   # Discord allows at most 25 options in one select menu
-FOOTER = "Station list: Radio Browser (radio-browser.info) · Streams belong to their stations"
 ONLINE = dirmod.ONLINE
-
-
-def clean(text: str) -> str:
-    return discord.utils.escape_markdown(discord.utils.escape_mentions(text or ""))
-
-
-def station_embed(station, headline: str) -> discord.Embed:
-    embed = discord.Embed(title=f"📻 {headline}", description=f"**{clean(station.name)}**", color=discord.Color.red())
-    if station.place:
-        embed.add_field(name="Location", value=clean(station.place), inline=True)
-    if station.genres:
-        embed.add_field(name="Genre", value=", ".join(sorted(station.genres))[:200], inline=True)
-    quality = " · ".join(x for x in (station.codec, f"{station.bitrate} kbps" if station.bitrate else "") if x)
-    if quality:
-        embed.add_field(name="Stream", value=quality, inline=True)
-    if station.homepage.startswith(("http://", "https://")):
-        embed.add_field(name="Website", value=station.homepage[:200], inline=False)
-    embed.set_footer(text=FOOTER)
-    return embed
-
-
-class StationPicker(discord.ui.View):
-    """Ephemeral results list: a select menu of up to 25 stations per page, plus paging."""
-
-    def __init__(self, cog: "Stations", user_id: int, stations: list, title: str):
-        super().__init__(timeout=600)
-        self.cog, self.user_id, self.stations, self.title = cog, user_id, stations, title
-        self.page = 0
-        self._render()
-
-    @property
-    def pages(self) -> int:
-        return max(1, -(-len(self.stations) // PAGE))
-
-    def current(self) -> list:
-        return self.stations[self.page * PAGE:(self.page + 1) * PAGE]
-
-    def embed(self) -> discord.Embed:
-        lines = []
-        for i, s in enumerate(self.current(), start=self.page * PAGE + 1):
-            where = f" · {clean(s.place)}" if s.place else ""
-            lines.append(f"`{i:>2}.` {clean(s.name)[:60]}{where}")
-        embed = discord.Embed(title=f"📻 {self.title}", description="\n".join(lines), color=discord.Color.red())
-        embed.set_footer(text=f"{len(self.stations)} stations · page {self.page + 1}/{self.pages} · {FOOTER}")
-        return embed
-
-    def _render(self):
-        self.clear_items()
-        options = []
-        for s in self.current():
-            bits = [s.place] + ([", ".join(sorted(s.genres)[:2])] if s.genres else []) + ([f"{s.bitrate}k"] if s.bitrate else [])
-            options.append(discord.SelectOption(
-                label=s.name[:100] or "Station", value=s.uuid[:100], description=" · ".join(b for b in bits if b)[:100] or None,
-            ))
-        select = discord.ui.Select(placeholder="Pick a station to play in your voice channel…", options=options)
-        select.callback = self._picked
-        self.add_item(select)
-        prev_b = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, disabled=self.page == 0)
-        next_b = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=self.page >= self.pages - 1)
-        close_b = discord.ui.Button(label="Close", style=discord.ButtonStyle.danger)
-        prev_b.callback, next_b.callback, close_b.callback = self._prev, self._next, self._close
-        for b in (prev_b, next_b, close_b):
-            self.add_item(b)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This list belongs to someone else. Use `/stations browse` to get your own.", ephemeral=True)
-            return False
-        return True
-
-    async def _flip(self, interaction: discord.Interaction, delta: int):
-        self.page = min(self.pages - 1, max(0, self.page + delta))
-        self._render()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
-
-    async def _prev(self, interaction):
-        await self._flip(interaction, -1)
-
-    async def _next(self, interaction):
-        await self._flip(interaction, +1)
-
-    async def _close(self, interaction):
-        self.stop()
-        await interaction.response.edit_message(content="Closed.", embed=None, view=None)
-
-    async def _picked(self, interaction: discord.Interaction):
-        uuid = interaction.data["values"][0]
-        station = self.cog.bot.directory.by_uuid.get(uuid)
-        await interaction.response.defer(ephemeral=True)
-        if station is None:
-            await interaction.followup.send("That station is no longer in the list. Please search again.", ephemeral=True)
-            return
-        ok, message = await self.cog.bot.public.tune(interaction.user, station, interaction.channel_id)
-        if not ok:
-            await interaction.followup.send(f"❌ {message}", ephemeral=True)
-            return
-        embed = station_embed(station, "Now playing")
-        embed.set_author(name=f"Tuned by {interaction.user.display_name}")
-        try:
-            await interaction.channel.send(embed=embed)
-            await interaction.followup.send("✅ Tuned in! Use `/stations stop` to stop.", ephemeral=True)
-        except (discord.HTTPException, AttributeError):
-            await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class Stations(commands.Cog):
@@ -124,6 +20,10 @@ class Stations(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+
+    async def cog_load(self):
+        # Re-attach the permanent panel buttons so panels posted before a restart keep working.
+        self.bot.add_view(PanelView(self))
 
     # ---- helpers
     async def _gate(self, interaction: discord.Interaction) -> bool:
@@ -139,7 +39,39 @@ class Stations(commands.Cog):
             return False
         return True
 
-    # ---- autocomplete
+    async def open_picker(self, interaction: discord.Interaction, state: str | None = None, city: str | None = None):
+        """Open the guided picker privately for whoever asked, optionally already on a state or city."""
+        if not await self._gate(interaction):
+            return
+        area = self.bot.public.area_for(interaction.user.id)
+        picker = GuidedPicker(self, interaction.user.id, saved_area=area)
+        if state:
+            picker.show_stations(state, city) if city else picker.show_areas(state)
+        await interaction.response.send_message(embed=picker.embed(), view=picker, ephemeral=True)
+
+    async def show_now(self, interaction: discord.Interaction):
+        if not await self._gate(interaction):
+            return
+        player = self.bot.public.players.get(interaction.guild_id)
+        if not player:
+            await interaction.response.send_message("Nothing is playing. Use `/stations browse` or the **Find a station** button.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=station_embed(player.station, "Now playing"))
+
+    async def stop_radio(self, interaction: discord.Interaction):
+        if not await self._gate(interaction):
+            return
+        player = self.bot.public.players.get(interaction.guild_id)
+        if not player:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        if not self.bot.public.may_control(interaction.user, player):
+            await interaction.response.send_message("Someone else is controlling the radio here.", ephemeral=True)
+            return
+        await self.bot.public.stop(interaction.guild, f"stopped by {interaction.user}")
+        await interaction.response.send_message("⏹ Stopped. Thanks for listening!")
+
+    # ---- autocomplete (for people who prefer typing)
     async def state_autocomplete(self, interaction: discord.Interaction, current: str):
         d, cur = self.bot.directory, current.lower().strip()
         rows = d.states()
@@ -165,26 +97,40 @@ class Stations(commands.Cog):
         ][:25]
 
     # ---- commands
-    @stations.command(name="browse", description="Find stations by state, city and genre")
-    @app_commands.describe(state="Your state (start typing)", city="A major city or market (optional)", genre="Narrow by genre (optional)")
+    @stations.command(name="browse", description="Pick your state and find a station, no typing needed")
+    @app_commands.describe(state="Skip ahead to a state (optional, start typing)", city="A major city or market (optional)",
+                           genre="Narrow by genre (optional)")
     @app_commands.autocomplete(state=state_autocomplete, city=city_autocomplete)
     @app_commands.choices(genre=[app_commands.Choice(name=g, value=g) for g in dirmod.GENRES])
-    async def browse(self, interaction: discord.Interaction, state: str, city: str | None = None,
+    async def browse(self, interaction: discord.Interaction, state: str | None = None, city: str | None = None,
                      genre: app_commands.Choice[str] | None = None):
+        if state is None and city is None and genre is None:
+            await self.open_picker(interaction)
+            return
         if not await self._gate(interaction):
+            return
+        if state is None:
+            await interaction.response.send_message("Pick a state as well, or run `/stations browse` on its own for the guided menu.", ephemeral=True)
             return
         if state != ONLINE and state not in dirmod.STATES:
             await interaction.response.send_message("Pick a state from the list as you type.", ephemeral=True)
             return
         found = self.bot.directory.browse(state, city, genre.value if genre else None)
+        if found and state != ONLINE and city is None and genre is None:
+            await self.open_picker(interaction, state=state)    # a state alone: let them choose a city next
+            return
         where = "Nationwide / online" if state == ONLINE else (f"{city}, {state}" if city else dirmod.STATES[state])
-        title = f"{where}" + (f" · {genre.value}" if genre else "")
         if not found:
             hint = " Try removing the genre or the city." if (genre or city) else ""
-            await interaction.response.send_message(f"No stations found for **{clean(title)}**.{hint}", ephemeral=True)
+            await interaction.response.send_message(f"No stations found for **{clean(where)}**.{hint}", ephemeral=True)
             return
-        view = StationPicker(self, interaction.user.id, found, title)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        picker = GuidedPicker(self, interaction.user.id, saved_area=self.bot.public.area_for(interaction.user.id))
+        picker.show_stations(state, city)
+        if genre:
+            picker.genre = genre.value
+            picker.stations = [s for s in picker.base if genre.value in s.genres]
+            picker._render()
+        await interaction.response.send_message(embed=picker.embed(), view=picker, ephemeral=True)
 
     @stations.command(name="search", description="Search by station name, call letters, frequency or genre")
     @app_commands.describe(query="e.g. WLS, 94.7, classic rock, jazz", state="Limit to one state (optional)")
@@ -196,32 +142,17 @@ class Stations(commands.Cog):
         if not found:
             await interaction.response.send_message(f"No stations matched **{clean(query)}**. Try fewer words, or `/stations browse`.", ephemeral=True)
             return
-        view = StationPicker(self, interaction.user.id, found, f"Results for “{query}”")
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        picker = GuidedPicker(self, interaction.user.id, saved_area=self.bot.public.area_for(interaction.user.id))
+        picker.show_results(found, f"Results for “{query}”")
+        await interaction.response.send_message(embed=picker.embed(), view=picker, ephemeral=True)
 
     @stations.command(name="now", description="Show what's playing in this server")
     async def now(self, interaction: discord.Interaction):
-        if not await self._gate(interaction):
-            return
-        player = self.bot.public.players.get(interaction.guild_id)
-        if not player:
-            await interaction.response.send_message("Nothing is playing. Use `/stations browse` to find a station.", ephemeral=True)
-            return
-        await interaction.response.send_message(embed=station_embed(player.station, "Now playing"))
+        await self.show_now(interaction)
 
     @stations.command(name="stop", description="Stop the radio and leave the voice channel")
     async def stop(self, interaction: discord.Interaction):
-        if not await self._gate(interaction):
-            return
-        player = self.bot.public.players.get(interaction.guild_id)
-        if not player:
-            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
-            return
-        if not self.bot.public.may_control(interaction.user, player):
-            await interaction.response.send_message("Someone else is controlling the radio here.", ephemeral=True)
-            return
-        await self.bot.public.stop(interaction.guild, f"stopped by {interaction.user}")
-        await interaction.response.send_message("⏹ Stopped. Thanks for listening!")
+        await self.stop_radio(interaction)
 
     @stations.command(name="volume", description="Set the radio volume for this server (1-100)")
     async def volume(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 100]):
@@ -236,6 +167,29 @@ class Stations(commands.Cog):
             return
         self.bot.public.set_volume(interaction.guild_id, level / 100)
         await interaction.response.send_message(f"🔊 Volume set to **{level}%**.")
+
+    @stations.command(name="panel", description="Post a permanent Find-a-station button panel in this channel (managers only)")
+    @app_commands.default_permissions(manage_guild=True)
+    async def panel(self, interaction: discord.Interaction):
+        if not await self._gate(interaction):
+            return
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need the **Manage Server** permission to post the panel.", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="📻 Radio from where you live",
+            description="Tap **Find a station**, pick your state and city, then choose a station.\n"
+                        "Join a voice channel first and I'll play it for you.",
+            color=discord.Color.red(),
+        )
+        embed.set_footer(text=FOOTER)
+        await interaction.response.send_message(embed=embed, view=PanelView(self))
+
+    @stations.command(name="forget", description="Forget the area I remembered for you")
+    async def forget(self, interaction: discord.Interaction):
+        had = await self.bot.public.forget_area(interaction.user.id)
+        await interaction.response.send_message(
+            "Done. I've forgotten your area." if had else "I hadn't saved an area for you.", ephemeral=True)
 
 
 async def setup(bot):

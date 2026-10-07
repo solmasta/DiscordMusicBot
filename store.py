@@ -26,7 +26,13 @@ CREATE TABLE IF NOT EXISTS guild_radio (
     started_by       INTEGER NOT NULL,
     volume           REAL    NOT NULL,
     updated_at       REAL    NOT NULL
-)
+);
+CREATE TABLE IF NOT EXISTS user_area (
+    user_id    INTEGER PRIMARY KEY,
+    state      TEXT NOT NULL,
+    city       TEXT,
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -97,7 +103,7 @@ class Store:
     def _connect(self):
         db = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         db.execute("PRAGMA journal_mode=WAL")
-        db.execute(SCHEMA)
+        db.executescript(SCHEMA)
         db.execute("SELECT COUNT(*) FROM guild_radio").fetchone()
         db.commit()
         self._db = db
@@ -151,3 +157,19 @@ class Store:
             except Exception as e:
                 log.warning("Skipping an unreadable saved record for server %s: %s", gid, e)
         return out
+
+    # ---- listeners' remembered areas (so "where are you listening from?" is one tap next time)
+    async def save_area(self, user_id: int, state: str, city: str | None):
+        await asyncio.to_thread(
+            self._run,
+            "INSERT INTO user_area (user_id, state, city, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET state=excluded.state, city=excluded.city, updated_at=excluded.updated_at",
+            (user_id, state, city, time.time()),
+        )
+
+    async def delete_area(self, user_id: int):
+        await asyncio.to_thread(self._run, "DELETE FROM user_area WHERE user_id=?", (user_id,))
+
+    async def all_areas(self) -> dict[int, tuple[str, str | None]]:
+        rows = await asyncio.to_thread(self._run, "SELECT user_id, state, city FROM user_area", (), True)
+        return {uid: (state, city) for uid, state, city in rows}
