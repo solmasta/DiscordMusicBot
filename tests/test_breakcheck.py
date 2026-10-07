@@ -126,3 +126,67 @@ class HomePick(unittest.IsolatedAsyncioTestCase):
             ok, msg = await self.bot.pick_station(self.member, self.station)
         self.assertFalse(ok)
         self.assertIn("Easy there", msg)
+
+
+class StreamTitles(unittest.IsolatedAsyncioTestCase):
+    """Real titles seen on 97.1 The Drive and Q101 while a break was starting."""
+
+    def test_songs_versus_station_content(self):
+        for song in ["POLICE - ROXANNE", "LED ZEPPELIN - THE OCEAN", "Marshmello, Bastille - Happier", "blink-182 - All The Small Things",
+                     "Weezer - We Might As Well Be Strangers (feat  Wednesday)", "sombr - back to friends"]:
+            self.assertTrue(B.looks_like_song(song), song)
+        for other in ["VT 97.1 The Drive: 2026-10-06 10:33", "S&T HALLOWEEN HAUNTED CRUISE PROMO", "Dan Stone-Twofer Tues Swp#1",
+                      "ROBERT PLANT KEYWORD (RECORD)", "PS - GVF 27-BP-OSTHURS-10052026==", "", "Q101"]:
+            self.assertFalse(B.looks_like_song(other), other)
+
+    async def asyncSetUp(self):
+        self.bot = B.MusicBot()
+        now = int(time.time() * 1000)
+        self.cues = {"track": (now - 260000, 263000, "THE OCEAN", "LED ZEPPELIN"), "ad": (now - 900000, 15000, None, None)}
+        self.bot._latest_cue = AsyncMock(side_effect=lambda mount, event: self.cues[event])
+
+    async def asyncTearDown(self):
+        await self.bot.close()
+
+    async def test_a_liner_flags_the_break_before_any_ad_cue_exists(self):
+        self.assertFalse(await self.bot._triton_in_break("drive", "WDRVFM"), "no stream title yet: cues say music")
+        self.bot._icy_title["drive"], self.bot._icy_seen["drive"] = "VT 97.1 The Drive: 2026-10-06 10:33", time.monotonic()
+        self.assertTrue(await self.bot._triton_in_break("drive", "WDRVFM"))
+        self.assertIn("not a song", self.bot._why["drive"])
+
+    async def test_a_song_title_does_not_flag_a_break(self):
+        self.bot._icy_title["drive"], self.bot._icy_seen["drive"] = "POLICE - ROXANNE", time.monotonic()
+        self.assertFalse(await self.bot._triton_in_break("drive", "WDRVFM"))
+
+    async def test_a_dead_title_reader_is_ignored(self):
+        self.bot._icy_title["drive"], self.bot._icy_seen["drive"] = "S&T PROMO", time.monotonic() - 120
+        self.assertFalse(await self.bot._triton_in_break("drive", "WDRVFM"), "old data must not trigger a switch")
+
+    async def test_reader_parses_titles_from_a_real_shaped_stream(self):
+        import asyncio
+        meta = b"StreamTitle='POLICE - ROXANNE';"
+        block = meta + b"\0" * (-len(meta) % 16)
+        data = (b"\0" * 16 + bytes([len(block) // 16]) + block) + (b"\0" * 16 + b"\0") * 3
+
+        class Content:
+            def __init__(self): self.buf = data
+            async def readexactly(self, n):
+                if len(self.buf) < n:
+                    raise asyncio.IncompleteReadError(b"", n)
+                out, self.buf = self.buf[:n], self.buf[n:]
+                return out
+
+        class Resp:
+            headers = {"icy-metaint": "16"}
+            content = Content()
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        self.bot._http = unittest.mock.MagicMock()
+        self.bot._http.get = lambda *a, **k: Resp()
+        task = asyncio.create_task(self.bot._icy_loop("drive", "http://x"))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        self.assertEqual(self.bot._icy_title["drive"], "POLICE - ROXANNE")
+        self.assertNotIn("drive", self.bot._icy_seen, "a dropped stream stops counting as live data")
+        self.bot._http = None

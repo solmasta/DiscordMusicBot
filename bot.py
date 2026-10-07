@@ -130,6 +130,16 @@ class JoinPrompt(discord.ui.View):
                 pass
 
 
+# Station sweepers, liners and promos come through the stream title without being tagged as ads, so a
+# title that isn't "Artist - Title" (or is labelled as a promo/liner) means the station isn't on music.
+_NOT_SONG = re.compile(r"\b(promo|swp|sweeper|liner|imaging|keyword|psa)\b|^(ps|vt|s&t)\b", re.I)
+
+
+def looks_like_song(title: str) -> bool:
+    title = (title or "").strip()
+    return " - " in title and not _NOT_SONG.search(title)
+
+
 def _pretty(text: str) -> str:
     """Some feeds send ALL CAPS names (The Drive, Rock 95.5 jingles); make them readable."""
     text = (text or "").strip()
@@ -169,6 +179,9 @@ class MusicBot(commands.Bot):
         self._last_switch = 0.0
         self._rock_music_until = 0.0    # monotonic deadline: ICY said a Rock 95.5 song is playing
         self._rock_task: asyncio.Task | None = None
+        self._icy_title: dict[str, str] = {}    # what each station's own stream says it is playing right now
+        self._icy_seen: dict[str, float] = {}   # monotonic time that stream last delivered data
+        self._icy_tasks: list[asyncio.Task] = []
         self._pick = None               # a station someone chose from the directory (pauses the rotation)
         self._pick_url = ""
         self._pick_by = ""
@@ -249,6 +262,8 @@ class MusicBot(commands.Bot):
                 self._break_monitor.start()
             if self._rock_task is None or self._rock_task.done():
                 self._rock_task = asyncio.create_task(self._rock_icy_loop())
+            if not self._icy_tasks:
+                self._icy_tasks = [asyncio.create_task(self._icy_loop(st["key"], st["url"])) for st in STATIONS if st["kind"] == "triton"]
             if NOW_PLAYING and NOW_PLAYING_CHANNEL_ID and not self._card_loop.is_running():
                 self._card_loop.start()
         if not self._directory_loop.is_running():
@@ -270,6 +285,8 @@ class MusicBot(commands.Bot):
         await self.public.store.close()
         if self._rock_task:
             self._rock_task.cancel()
+        for task in self._icy_tasks:
+            task.cancel()
         if self._http:
             await self._http.close()
         await super().close()
@@ -526,6 +543,13 @@ class MusicBot(commands.Bot):
             self._song_end[key] = (track[0] + track[1]) / 1000 if track[1] > 0 else None
             self._song_span[key] = (track[0] / 1000, (track[0] + track[1]) / 1000) if track[1] > 0 else None
         now_ms = time.time() * 1000
+        # The stream's own title is live, while ad cues only show up once the spots start (a Drive break
+        # begins with a liner and promos for ~2 minutes before the first ad cue) and new cues take ~20 s
+        # to publish. A title that isn't a song means the station has left the music.
+        icy = self._icy_title.get(key)
+        if icy and time.monotonic() - self._icy_seen.get(key, 0) < 60 and not looks_like_song(icy):
+            self._why[key] = f"stream title is “{icy[:50]}”, not a song"
+            return True
         if not ad:
             self._why[key] = "no ad cue published"
             return False
@@ -582,6 +606,35 @@ class MusicBot(commands.Bot):
                     first = False
                     continue
                 self._rock_icy_event(meta)
+
+    async def _icy_loop(self, key: str, url: str):
+        """Follow a station's stream titles (a second, listen-only connection) for break detection."""
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
+        headers = {"Icy-MetaData": "1", "User-Agent": "CrueFM/1.0"}
+        while True:
+            try:
+                async with self._http.get(url, headers=headers, timeout=timeout) as resp:
+                    metaint = int(resp.headers.get("icy-metaint", 0))
+                    if not metaint:
+                        raise RuntimeError("no ICY metadata")
+                    while True:
+                        await resp.content.readexactly(metaint)
+                        length = (await resp.content.readexactly(1))[0] * 16
+                        self._icy_seen[key] = time.monotonic()
+                        if not length:
+                            continue
+                        raw = (await resp.content.readexactly(length)).rstrip(b"\0").decode("utf-8", "replace")
+                        m = re.search(r"StreamTitle='(.*?)';", raw, re.S)
+                        title = m.group(1).strip() if m else ""
+                        if title and title != self._icy_title.get(key):
+                            self._icy_title[key] = title
+                            log.info("%s stream title: %s", STATION_BY_KEY[key]["name"], title)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("%s stream-title reader stopped (%s); retrying", STATION_BY_KEY[key]["name"], e)
+                self._icy_seen.pop(key, None)
+                await asyncio.sleep(10)
 
     async def _rock_icy_loop(self):
         while True:
@@ -856,9 +909,11 @@ class MusicBot(commands.Bot):
             run = self._runway(key)
             left = "–" if run == float("inf") else f"{int(run)}s left"
             here = "▶ " if key == self._current else ""
+            icy = self._icy_title.get(key)
+            live = f"\nStream says: {icy[:60]}" if icy and time.monotonic() - self._icy_seen.get(key, 0) < 60 else ""
             embed.add_field(
                 name=f"{here}{st['name']}: {state}",
-                value=f"{song[:80]}\n{self._why.get(key) or 'not checked yet'} · {left}" + (f" · {self._fails[key]} failed checks" if self._fails[key] else ""),
+                value=f"{song[:80]}\n{self._why.get(key) or 'not checked yet'} · {left}{live}" + (f" · {self._fails[key]} failed checks" if self._fails[key] else ""),
                 inline=False,
             )
         since = int(time.monotonic() - self._last_switch) if self._last_switch else None
