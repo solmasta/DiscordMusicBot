@@ -23,6 +23,7 @@ def make_cog(records, home=None):
     bot.public.tune = AsyncMock(return_value=(True, "ok"))
     bot.public.players = {}
     bot.public.area_for = MagicMock(return_value=None)
+    bot.public.panel_for = MagicMock(return_value=None)
     bot.public.remember_area = AsyncMock()
     bot.public.forget_area = AsyncMock(return_value=True)
     S.HOME_GUILD_ID = home

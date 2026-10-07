@@ -138,6 +138,7 @@ class PublicRadio:
         self._cooldown: dict[int, float] = {}
         self._saved: dict[int, SavedRadio] = {}     # what is stored, so joins don't need a database read
         self._areas: dict[int, tuple[str, str | None]] = {}   # listener -> (state, city) they last picked from
+        self._panels: dict[int, tuple[int, int]] = {}         # server -> (channel, message) of its control panel
         self._resuming: set[int] = set()
         self._resumed = False
         self._tasks: set[asyncio.Task] = set()
@@ -150,6 +151,7 @@ class PublicRadio:
             await self.store.open()
             self._saved = {row.guild_id: row for row in await self.store.all()}
             self._areas = await self.store.all_areas()
+            self._panels = await self.store.all_panels()
             log.info("Loaded saved radio settings for %d server(s) and %d listener area(s)", len(self._saved), len(self._areas))
         except Exception as e:
             log.error("Saved settings are unavailable (%s); the radio will work but won't be remembered", e)
@@ -176,6 +178,29 @@ class PublicRadio:
             await self.store.update_volume(guild_id, volume)
         except Exception as e:
             log.warning("Could not save the volume for server %s: %s", guild_id, e)
+
+    def panel_for(self, guild_id: int) -> tuple[int, int] | None:
+        return self._panels.get(guild_id)
+
+    async def set_panel(self, guild_id: int, channel_id: int, message_id: int):
+        self._panels[guild_id] = (channel_id, message_id)
+        try:
+            await self.store.save_panel(guild_id, channel_id, message_id)
+        except Exception as e:
+            log.warning("Could not save the control panel for server %s: %s", guild_id, e)
+
+    async def drop_panel(self, guild_id: int):
+        self._panels.pop(guild_id, None)
+        try:
+            await self.store.delete_panel(guild_id)
+        except Exception as e:
+            log.warning("Could not delete the control panel for server %s: %s", guild_id, e)
+
+    def changed(self, guild_id: int):
+        """Something about this server's radio changed: let the live panel (if it has one) redraw."""
+        cog = self.bot.get_cog("Stations")
+        if cog is not None and guild_id in self._panels:
+            self._spawn(cog.update_panel(guild_id))
 
     def area_for(self, user_id: int) -> tuple[str, str | None] | None:
         return self._areas.get(user_id)
@@ -269,6 +294,7 @@ class PublicRadio:
             return False, f"**{station.name}** isn't responding right now. Please try another station."
         log.info("Tuned %s to %s (%s)", guild.name, station.name, station.place)
         await self._persist(player)
+        self.changed(guild.id)
         return True, f"Now playing **{station.name}**"
 
     @staticmethod
@@ -323,6 +349,8 @@ class PublicRadio:
             except Exception as e:
                 log.warning("Error leaving voice in %s: %s", guild.name, e)
         log.info("Stopped radio in %s (%s)", guild.name, reason)
+        if forget:
+            self.changed(guild.id)
 
     async def shutdown(self):
         for gid in list(self.players):

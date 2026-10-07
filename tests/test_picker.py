@@ -449,10 +449,13 @@ class Panel(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("view", i.response.send_message.await_args.kwargs)
         i = interaction()
         i.user.guild_permissions = types.SimpleNamespace(manage_guild=True)
+        i.original_response = AsyncMock(return_value=types.SimpleNamespace(id=777, channel=types.SimpleNamespace(id=66)))
+        self.bot.public.set_panel = AsyncMock()
         await self.cog.panel.callback(self.cog, i)
         kw = i.response.send_message.await_args.kwargs
-        self.assertIsInstance(kw["view"], PK.PanelView)
+        self.assertIsInstance(kw["view"], PK.RemoteView, "the panel carries the full controls")
         self.assertNotIn("ephemeral", kw, "the panel is posted publicly")
+        self.bot.public.set_panel.assert_awaited_once_with(5, 66, 777)
         self.assertEqual(self.cog.panel.default_permissions.manage_guild, True)
 
 
@@ -528,7 +531,28 @@ class Remote(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(v.timeout)
         self.assertTrue(v.is_persistent())
         valid(v)
-        self.assertEqual(len({c.custom_id for c in v.children}), 4)
+        self.assertEqual(len({c.custom_id for c in v.children}), 8, "three state menus and five buttons")
+
+    async def test_states_can_be_picked_right_in_the_box(self):
+        v = PK.RemoteView(self.cog)
+        selects = [c for c in v.children if isinstance(c, discord.ui.Select)]
+        self.assertEqual(len(selects), 3)
+        offered = [o.value for s in selects for o in s.options]
+        self.assertEqual(sorted(offered), sorted(D.STATES), "every state is reachable, none twice")
+        self.assertTrue(all(len(s.options) <= 25 for s in selects))
+        i = interaction()
+        i.data = {"values": ["IL"]}
+        await selects[0].callback(i)
+        kw = i.response.send_message.await_args.kwargs
+        self.assertTrue(kw["ephemeral"], "the choice opens privately so the shared box stays clean")
+        self.assertEqual((kw["view"].screen, kw["view"].state), ("areas", "IL"))
+
+    async def test_online_button_opens_the_nationwide_list(self):
+        v = PK.RemoteView(self.cog)
+        i = interaction()
+        await v.online.callback(i)
+        kw = i.response.send_message.await_args.kwargs
+        self.assertEqual((kw["view"].screen, kw["view"].state), ("stations", D.ONLINE))
 
     async def test_volume_buttons_step_by_ten_and_clamp(self):
         i = interaction()
@@ -560,3 +584,57 @@ class Remote(unittest.IsolatedAsyncioTestCase):
         kw = i.followup.send.await_args.kwargs
         self.assertIsInstance(kw["view"], PK.RemoteView)
         self.assertEqual(kw["file"].filename, "station.png")
+
+
+class LivePanel(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.cog, self.bot = make_cog(world_records())
+        self.station = self.bot.directory.stations[0]
+        self.message = MagicMock()
+        self.message.edit = AsyncMock()
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(return_value=self.message)
+        self.guild = MagicMock()
+        self.guild.get_channel = lambda cid: channel
+        self.guild.get_member = lambda uid: types.SimpleNamespace(display_name="Pat")
+        self.bot.get_guild = lambda gid: self.guild
+        self.bot.public.panel_for = MagicMock(return_value=(66, 777))
+        self.bot.public.drop_panel = AsyncMock()
+
+    async def test_panel_shows_the_card_while_playing_and_the_welcome_when_idle(self):
+        self.bot.public.players = {5: types.SimpleNamespace(station=self.station, started_by=1, volume=0.4)}
+        await self.cog.update_panel(5)
+        kw = self.message.edit.await_args.kwargs
+        self.assertEqual(kw["embed"].image.url, "attachment://station.png")
+        self.assertEqual(kw["embed"].author.name, "Tuned by Pat")
+        self.assertIsInstance(kw["view"], PK.RemoteView)
+        self.bot.public.players = {}
+        await self.cog.update_panel(5)
+        kw = self.message.edit.await_args.kwargs
+        self.assertIn("Pick your state", kw["embed"].description)
+        self.assertEqual([f.filename for f in kw["attachments"]], ["icon.png"], "the card is swapped out for the icon")
+
+    async def test_a_deleted_panel_is_forgotten(self):
+        import discord
+        self.message.edit.side_effect = discord.NotFound(MagicMock(status=404), "gone")
+        await self.cog.update_panel(5)
+        self.bot.public.drop_panel.assert_awaited_once_with(5)
+
+    async def test_other_failures_keep_the_panel(self):
+        self.message.edit.side_effect = RuntimeError("network")
+        await self.cog.update_panel(5)
+        self.bot.public.drop_panel.assert_not_awaited()
+
+    async def test_no_panel_means_nothing_to_do(self):
+        self.bot.public.panel_for = MagicMock(return_value=None)
+        await self.cog.update_panel(5)
+        self.message.edit.assert_not_awaited()
+
+    async def test_picking_a_station_does_not_double_post_when_a_panel_exists(self):
+        v = PK.GuidedPicker(self.cog, 1)
+        v.show_stations("IL", "Chicago")
+        i = interaction()
+        i.data = {"values": [v.stations[0].uuid]}
+        await v._station_picked(i)
+        i.channel.send.assert_not_awaited()
+        self.assertIn("radio panel", i.followup.send.await_args.args[0])

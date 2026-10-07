@@ -255,6 +255,7 @@ class MusicBot(commands.Bot):
 
     async def on_guild_remove(self, guild: discord.Guild):
         await self.public.forget(guild.id)   # the bot was removed: drop that server's saved settings
+        await self.public.drop_panel(guild.id)
         self.public.players.pop(guild.id, None)
 
     async def close(self):

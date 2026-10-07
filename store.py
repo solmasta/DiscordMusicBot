@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS guild_radio (
     volume           REAL    NOT NULL,
     updated_at       REAL    NOT NULL
 );
+CREATE TABLE IF NOT EXISTS guild_panel (
+    guild_id   INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS user_area (
     user_id    INTEGER PRIMARY KEY,
     state      TEXT NOT NULL,
@@ -173,3 +178,19 @@ class Store:
     async def all_areas(self) -> dict[int, tuple[str, str | None]]:
         rows = await asyncio.to_thread(self._run, "SELECT user_id, state, city FROM user_area", (), True)
         return {uid: (state, city) for uid, state, city in rows}
+
+    # ---- the live control panel message each server has (edited in place as the radio changes)
+    async def save_panel(self, guild_id: int, channel_id: int, message_id: int):
+        await asyncio.to_thread(
+            self._run,
+            "INSERT INTO guild_panel (guild_id, channel_id, message_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id",
+            (guild_id, channel_id, message_id),
+        )
+
+    async def delete_panel(self, guild_id: int):
+        await asyncio.to_thread(self._run, "DELETE FROM guild_panel WHERE guild_id=?", (guild_id,))
+
+    async def all_panels(self) -> dict[int, tuple[int, int]]:
+        rows = await asyncio.to_thread(self._run, "SELECT guild_id, channel_id, message_id FROM guild_panel", (), True)
+        return {g: (c, m) for g, c, m in rows}

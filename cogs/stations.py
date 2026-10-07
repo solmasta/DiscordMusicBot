@@ -8,7 +8,7 @@ from discord.ext import commands
 
 import directory as dirmod
 from picker import (BRAND, FOOTER, GuidedPicker, PanelView, RemoteView, brand_file, clean,  # noqa: F401  (station_embed is re-exported)
-                    now_playing, station_embed)
+                    now_playing, panel_content, station_embed)
 
 log = logging.getLogger("stations")
 
@@ -95,6 +95,31 @@ class Stations(commands.Cog):
             return
         await self.bot.public.stop(interaction.guild, f"stopped by {interaction.user}")
         await interaction.response.send_message("⏹ Stopped. Thanks for listening!")
+
+    @staticmethod
+    def _who(guild, player) -> str | None:
+        member = guild.get_member(player.started_by) if (guild and player) else None
+        return member.display_name if member else None
+
+    async def update_panel(self, guild_id: int):
+        """Redraw the server's live control panel to match what's playing. If its message was
+        deleted, forget it; any other failure just leaves the old picture until next time."""
+        ref = self.bot.public.panel_for(guild_id)
+        guild = self.bot.get_guild(guild_id)
+        if not ref or guild is None:
+            return
+        channel_id, message_id = ref
+        try:
+            channel = guild.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+            message = await channel.fetch_message(message_id)
+            player = self.bot.public.players.get(guild_id)
+            embed, files = await panel_content(player, self._who(guild, player))
+            await message.edit(embed=embed, attachments=files, view=RemoteView(self))
+        except (discord.NotFound, discord.Forbidden):
+            log.info("Control panel in server %s is gone; no longer updating it", guild_id)
+            await self.bot.public.drop_panel(guild_id)
+        except Exception as e:
+            log.warning("Could not update the control panel in server %s: %s", guild_id, e)
 
     # ---- autocomplete (for people who prefer typing)
     async def state_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -201,18 +226,11 @@ class Stations(commands.Cog):
         if not interaction.user.guild_permissions.manage_guild:
             await interaction.response.send_message("You need the **Manage Server** permission to post the panel.", ephemeral=True)
             return
-        embed = discord.Embed(
-            title="📻 Radio from where you live",
-            description="Tap **Find a station**, pick your state and city, then choose a station.\n"
-                        "Join a voice channel first and I'll play it for you.",
-            color=BRAND,
-        )
-        embed.set_footer(text=FOOTER)
-        icon = brand_file()
-        extra = {"file": icon} if icon else {}
-        if icon:
-            embed.set_thumbnail(url="attachment://icon.png")
-        await interaction.response.send_message(embed=embed, view=PanelView(self), **extra)
+        player = self.bot.public.players.get(interaction.guild_id)
+        embed, files = await panel_content(player, self._who(interaction.guild, player))
+        await interaction.response.send_message(embed=embed, view=RemoteView(self), files=files)
+        message = await interaction.original_response()
+        await self.bot.public.set_panel(interaction.guild_id, message.channel.id, message.id)
 
     @stations.command(name="forget", description="Forget the area I remembered for you")
     async def forget(self, interaction: discord.Interaction):

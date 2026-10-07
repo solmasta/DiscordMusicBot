@@ -356,33 +356,72 @@ class GuidedPicker(discord.ui.View):
                    "right-click the bot in the voice channel → **User Volume** to raise it just for you.")
         extra = {"file": card} if card else {}
         try:
+            if self.cog.bot.public.panel_for(interaction.guild_id):
+                await interaction.followup.send(f"✅ Tuned in to **{clean(station.name)}**. The radio panel has the controls." + tip, ephemeral=True)
+                return
             await interaction.channel.send(embed=embed, view=RemoteView(self.cog), **extra)
             await interaction.followup.send("✅ Tuned in!" + tip, ephemeral=True)
         except (discord.HTTPException, AttributeError):
             await interaction.followup.send(content=tip.strip() or None, embed=embed, ephemeral=True, **extra)
 
 
+IDLE_TEXT = ("**Pick your state below**, then your city, then a station.\n"
+             "Join a voice channel first and I'll play it for you.")
+
+
+async def panel_content(player, who: str | None = None) -> tuple[discord.Embed, list[discord.File]]:
+    """What a server's live control panel shows: the station card while playing, a welcome when idle."""
+    if player is not None:
+        embed, card = await now_playing(player.station, "Now playing", by=who)
+        if card:
+            return embed, [card]
+        return embed, []
+    embed = discord.Embed(title="📻 Radio from where you live", description=IDLE_TEXT, color=BRAND)
+    embed.set_footer(text=FOOTER)
+    icon = brand_file()
+    if icon:
+        embed.set_thumbnail(url="attachment://icon.png")
+        return embed, [icon]
+    return embed, []
+
+
 class RemoteView(discord.ui.View):
-    """Tap-to-control buttons under the Now Playing card. Permanent, like the panel, so they keep
-    working after a restart; the cog applies the same who-may-control rules as the slash commands."""
+    """The radio box's controls: pick your state right in the box (three menus, since Discord caps a
+    menu at 25 options), then Find / Online / volume / Stop. Permanent, so it keeps working after a
+    restart; the cog applies the same who-may-control rules as the slash commands."""
 
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
+        rows = [(code, name, 0) for code, name in dirmod.STATES.items()]
+        for idx, group in enumerate(state_groups(rows)):
+            sel = discord.ui.Select(
+                placeholder=f"🗺️ Pick your state: {group[0][1]} – {group[-1][1]}",
+                options=[discord.SelectOption(label=name, value=code) for code, name, _ in group],
+                custom_id=f"crue:remote:states{idx}", row=idx)
+            sel.callback = self._state_picked
+            self.add_item(sel)
 
-    @discord.ui.button(label="Change station", emoji="📻", style=discord.ButtonStyle.primary, custom_id="crue:remote:change")
+    async def _state_picked(self, interaction: discord.Interaction):
+        await self.cog.open_picker(interaction, state=interaction.data["values"][0])
+
+    @discord.ui.button(label="Find a station", emoji="📻", style=discord.ButtonStyle.primary, custom_id="crue:remote:change", row=3)
     async def change(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.open_picker(interaction)
 
-    @discord.ui.button(emoji="🔉", style=discord.ButtonStyle.secondary, custom_id="crue:remote:down")
+    @discord.ui.button(emoji="🌐", style=discord.ButtonStyle.secondary, custom_id="crue:remote:online", row=3)
+    async def online(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.open_picker(interaction, state=dirmod.ONLINE)
+
+    @discord.ui.button(emoji="🔉", style=discord.ButtonStyle.secondary, custom_id="crue:remote:down", row=3)
     async def quieter(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.nudge_volume(interaction, -0.1)
 
-    @discord.ui.button(emoji="🔊", style=discord.ButtonStyle.secondary, custom_id="crue:remote:up")
+    @discord.ui.button(emoji="🔊", style=discord.ButtonStyle.secondary, custom_id="crue:remote:up", row=3)
     async def louder(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.nudge_volume(interaction, +0.1)
 
-    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="crue:remote:stop")
+    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="crue:remote:stop", row=3)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.stop_radio(interaction)
 

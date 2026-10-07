@@ -22,6 +22,25 @@ def saved(gid=1, **kw):
     return S.SavedRadio(**base)
 
 
+class PanelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_panels_are_saved_replaced_and_deleted(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        store = S.Store(tmp)
+        await store.open()
+        await store.save_panel(1, 10, 100)
+        await store.save_panel(1, 11, 101)
+        await store.save_panel(2, 20, 200)
+        self.assertEqual(await store.all_panels(), {1: (11, 101), 2: (20, 200)})
+        await store.delete_panel(1)
+        self.assertEqual(await store.all_panels(), {2: (20, 200)})
+        await store.close()
+        again = S.Store(tmp)
+        await again.open()
+        self.assertEqual(await again.all_panels(), {2: (20, 200)}, "survives a restart")
+        await again.close()
+
+
 class StoreTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.mkdtemp()
