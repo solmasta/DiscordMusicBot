@@ -294,7 +294,8 @@ class PublicRadio:
             return None
         return vc
 
-    async def tune(self, member: discord.Member, station, text_channel_id: int | None = None) -> tuple[bool, str]:
+    async def tune(self, member: discord.Member, station, text_channel_id: int | None = None,
+                   dead: list | None = None) -> tuple[bool, str]:
         guild = member.guild
         voice, existing, problem = self._check_member(member, "station")
         if problem:
@@ -303,6 +304,8 @@ class PublicRadio:
         url = await self.bot.directory.resolve_url(station)
         problem = await check_stream_url(url)
         if problem:
+            if dead is not None:
+                dead.append(station)
             return False, problem
         vc = await self._connect(guild, voice)
         if vc is None:
@@ -315,6 +318,8 @@ class PublicRadio:
         if not await self._wait_started(player):
             # Dead link: put back what was playing before, or leave if nothing was.
             log.info("Station %s (%s) did not start in %s", station.name, url, guild.name)
+            if dead is not None:
+                dead.append(station)
             if existing:
                 self.players[guild.id] = existing
                 self._play(vc, existing)
@@ -325,6 +330,21 @@ class PublicRadio:
         await self._persist(player)
         self.changed(guild.id)
         return True, f"Now playing **{station.name}**"
+
+    async def tune_first_working(self, member: discord.Member, stations: list, text_channel_id: int | None = None,
+                                 tries: int = 4) -> tuple[bool, str, object | None]:
+        """Try the best stations in order until one actually plays. Only dead or unreachable stations
+        are skipped; any other problem (permissions, busy, someone else in control) stops at once."""
+        message = "No stations to try."
+        for station in stations[:tries]:
+            dead: list = []
+            ok, message = await self.tune(member, station, text_channel_id, dead=dead)
+            if ok:
+                return True, message, station
+            if not dead:
+                return False, message, None
+            self._cooldown.pop(member.id, None)      # our own retry shouldn't trip the "easy there" timer
+        return False, "None of the top stations there are responding right now. Try another place or genre.", None
 
     async def play_songs(self, member: discord.Member, songs: list, text_channel_id: int | None = None) -> tuple[bool, str]:
         """Play free-licensed songs one after another, starting with the first. Not saved across a

@@ -193,6 +193,56 @@ class Stations(commands.Cog):
             picker._render()
         await self._send_picker(interaction, picker)
 
+    @stations.command(name="play", description="Type a city or state and I'll play the best working station there")
+    @app_commands.describe(place="e.g. Chicago, Austin TX, Ohio (leave empty to use the area I remembered for you)",
+                           genre="Narrow by genre (optional)")
+    @app_commands.choices(genre=[app_commands.Choice(name=g, value=g) for g in dirmod.GENRES])
+    async def play(self, interaction: discord.Interaction, place: app_commands.Range[str, 2, 60] | None = None,
+                   genre: app_commands.Choice[str] | None = None):
+        if not await self._gate(interaction, home_ok=True):
+            return
+        d = self.bot.directory
+        if place:
+            found = d.find_place(place)
+        else:
+            found = self.bot.public.area_for(interaction.user.id)
+            if found is None:
+                await interaction.response.send_message("Tell me a place, like `/stations play place:Chicago`. I'll remember it for next time.", ephemeral=True)
+                return
+        if found is None:
+            await interaction.response.send_message(f"I don't know **{clean(place or '')}** yet. Try a city or state, or use `/stations search`.", ephemeral=True)
+            return
+        state, city = found
+        options = d.browse(state, city, genre.value if genre else None)
+        where = f"{city}, {state}" if city else dirmod.STATES[state]
+        if not options:
+            hint = " Try without the genre." if genre else ""
+            await interaction.response.send_message(f"No stations found for **{clean(where)}**.{hint}", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        if self.is_home(interaction.guild_id):
+            ok, message = await self.bot.pick_station(interaction.user, options[0])
+            station = options[0] if ok else None
+        else:
+            ok, message, station = await self.bot.public.tune_first_working(interaction.user, options, interaction.channel_id)
+        if not ok:
+            await interaction.followup.send(f"❌ {message}", ephemeral=True)
+            return
+        await self.bot.public.remember_area(interaction.user.id, state, city)
+        if self.is_home(interaction.guild_id):
+            await interaction.followup.send(f"✅ Now playing **{clean(station.name)}** ({clean(where)}). The radio card updates in a few seconds.", ephemeral=True)
+            return
+        embed, card = await now_playing(station, "Now playing", by=interaction.user.display_name)
+        extra = {"file": card} if card else {}
+        try:
+            if self.bot.public.panel_for(interaction.guild_id):
+                await interaction.followup.send(f"✅ Tuned in to **{clean(station.name)}** ({clean(where)}). The radio panel has the controls.", ephemeral=True)
+            else:
+                await interaction.channel.send(embed=embed, view=RemoteView(self), **extra)
+                await interaction.followup.send(f"✅ Tuned in to **{clean(station.name)}**. Not what you wanted? `/stations browse` shows more in {clean(where)}.", ephemeral=True)
+        except (discord.HTTPException, AttributeError):
+            await interaction.followup.send(embed=embed, ephemeral=True, **extra)
+
     @stations.command(name="search", description="Search by station name, call letters, frequency or genre")
     @app_commands.describe(query="e.g. WLS, 94.7, classic rock, jazz", state="Limit to one state (optional)")
     @app_commands.autocomplete(state=state_autocomplete)
