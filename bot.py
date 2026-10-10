@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 import directory as dirmod
 import library as songlib
+import premium as premium_mod
 import visuals
 from picker import HomeRadioView, clean
 from publicradio import FFMPEG_BEFORE, FFMPEG_OPTIONS, START_WAIT_S, PublicRadio, _Probe, check_stream_url, opus_settings
@@ -168,6 +169,7 @@ class MusicBot(commands.Bot):
         self._prompted: dict[int, float] = {}  # user id -> last time they got the join prompt
         self.directory = dirmod.Directory()   # searchable US station list for /stations
         self.library = songlib.Library()      # songs by genre: free-licensed everywhere, popular hits at home
+        self.premium = premium_mod.Premium(self)   # Discord server subscriptions
         self.public = PublicRadio(self)       # radio players for servers other than the home server
         self._branding_done = False
         self._tap: visuals.SpectrumTap | None = None
@@ -210,6 +212,7 @@ class MusicBot(commands.Bot):
         await self.load_extension("cogs.music")
         await self.load_extension("cogs.stations")
         await self.load_extension("cogs.library")
+        await self.load_extension("cogs.premium")
         self.add_view(HomeRadioView(self))      # the controls under the radio card survive restarts
 
         @self.tree.command(name="radio", description="Show the station and song playing now")
@@ -284,10 +287,25 @@ class MusicBot(commands.Bot):
             self._directory_loop.start()
         if not self.public.monitor.is_running():
             self.public.monitor.start()
+        if self.premium.enabled and not self._premium_loop.is_running():
+            self._premium_loop.start()
         asyncio.create_task(self.public.resume_all())
         if BRANDING and not self._branding_done:
             self._branding_done = True
             asyncio.create_task(self._apply_branding())
+
+    @tasks.loop(minutes=30)
+    async def _premium_loop(self):
+        await self.premium.refresh()      # safety net in case an entitlement event was missed
+
+    async def on_entitlement_create(self, entitlement):
+        self.premium.on_entitlement(entitlement)
+
+    async def on_entitlement_update(self, entitlement):
+        self.premium.on_entitlement(entitlement)
+
+    async def on_entitlement_delete(self, entitlement):
+        self.premium.on_entitlement(entitlement)
 
     async def on_guild_remove(self, guild: discord.Guild):
         await self.public.forget(guild.id)   # the bot was removed: drop that server's saved settings

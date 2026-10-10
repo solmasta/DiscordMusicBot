@@ -334,6 +334,33 @@ class Directory:
         rows = [(c, n) for c, n in counts.items() if c in major or n >= 2]
         return sorted(rows, key=lambda t: (t[0] not in major, -t[1], t[0]))
 
+    def find_place(self, text: str) -> tuple[str, str | None] | None:
+        """Turn what someone typed ('Chicago', 'austin tx', 'Ohio', 'ny') into (state, city or None),
+        or None when it isn't a place we have stations for."""
+        low = re.sub(r"\s+", " ", (text or "").strip().lower())
+        if not low:
+            return None
+        state_hint = normalize_state(text)
+        best: tuple[int, str, str] | None = None     # (stations, state, city)
+        counts: dict[tuple[str, str], int] = {}
+        for s in self.stations:
+            place = s.market or s.city
+            if place and s.state:
+                counts[(s.state, place)] = counts.get((s.state, place), 0) + 1
+        for (state, place), n in counts.items():
+            name = place.lower()
+            if name not in low and low.split(",")[0].strip() != name:
+                continue
+            if state_hint and state != state_hint:
+                continue
+            if best is None or (len(name), n) > (len(best[2]), best[0]):
+                best = (n, state, place)
+        if best:
+            return best[1], best[2]
+        if state_hint and any(s.state == state_hint for s in self.stations):
+            return state_hint, None     # just a state, or a town we have no stations for: use the state
+        return None
+
     def browse(self, state: str | None = None, city: str | None = None, genre: str | None = None) -> list[Station]:
         out = []
         for s in self.stations:

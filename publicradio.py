@@ -151,6 +151,12 @@ class PublicRadio:
         self._resumed = False
         self._tasks: set[asyncio.Task] = set()
 
+    def slot_limit(self, guild_id: int | None) -> int:
+        """How many servers may be playing when this one asks: premium servers get a few reserved extras."""
+        prem = getattr(self.bot, "premium", None)
+        extra = prem.extra_slots(guild_id) if prem is not None else 0
+        return MAX_STREAMS + (extra if isinstance(extra, int) else 0)
+
     # ---- saved settings
     async def start(self):
         """Open the settings store and load what each server had playing. Never blocks the radio:
@@ -266,8 +272,9 @@ class PublicRadio:
         if now - self._cooldown.get(member.id, 0) < 4:
             return None, None, "Easy there, give it a few seconds before changing again."
         existing = self.players.get(guild.id)
-        if existing is None and len(self.players) >= MAX_STREAMS:
-            return None, None, "I'm busy playing in a lot of servers right now. Please try again in a few minutes."
+        if existing is None and len(self.players) >= self.slot_limit(guild.id):
+            hint = " Premium servers get priority slots: see `/premium`." if getattr(getattr(self.bot, "premium", None), "enabled", False) is True else ""
+            return None, None, "I'm busy playing in a lot of servers right now. Please try again in a few minutes." + hint
         if not self.may_control(member, existing):
             return None, None, "Someone else is controlling the radio here. Join their voice channel, or ask a server manager."
         perms = voice.permissions_for(guild.me)
@@ -287,7 +294,8 @@ class PublicRadio:
             return None
         return vc
 
-    async def tune(self, member: discord.Member, station, text_channel_id: int | None = None) -> tuple[bool, str]:
+    async def tune(self, member: discord.Member, station, text_channel_id: int | None = None,
+                   dead: list | None = None) -> tuple[bool, str]:
         guild = member.guild
         voice, existing, problem = self._check_member(member, "station")
         if problem:
@@ -296,6 +304,8 @@ class PublicRadio:
         url = await self.bot.directory.resolve_url(station)
         problem = await check_stream_url(url)
         if problem:
+            if dead is not None:
+                dead.append(station)
             return False, problem
         vc = await self._connect(guild, voice)
         if vc is None:
@@ -308,6 +318,8 @@ class PublicRadio:
         if not await self._wait_started(player):
             # Dead link: put back what was playing before, or leave if nothing was.
             log.info("Station %s (%s) did not start in %s", station.name, url, guild.name)
+            if dead is not None:
+                dead.append(station)
             if existing:
                 self.players[guild.id] = existing
                 self._play(vc, existing)
@@ -318,6 +330,21 @@ class PublicRadio:
         await self._persist(player)
         self.changed(guild.id)
         return True, f"Now playing **{station.name}**"
+
+    async def tune_first_working(self, member: discord.Member, stations: list, text_channel_id: int | None = None,
+                                 tries: int = 4) -> tuple[bool, str, object | None]:
+        """Try the best stations in order until one actually plays. Only dead or unreachable stations
+        are skipped; any other problem (permissions, busy, someone else in control) stops at once."""
+        message = "No stations to try."
+        for station in stations[:tries]:
+            dead: list = []
+            ok, message = await self.tune(member, station, text_channel_id, dead=dead)
+            if ok:
+                return True, message, station
+            if not dead:
+                return False, message, None
+            self._cooldown.pop(member.id, None)      # our own retry shouldn't trip the "easy there" timer
+        return False, "None of the top stations there are responding right now. Try another place or genre.", None
 
     async def play_songs(self, member: discord.Member, songs: list, text_channel_id: int | None = None) -> tuple[bool, str]:
         """Play free-licensed songs one after another, starting with the first. Not saved across a
@@ -494,8 +521,8 @@ class PublicRadio:
         if not isinstance(channel, discord.VoiceChannel):
             await self.forget(gid)            # the channel was deleted
             return False
-        if len(self.players) >= MAX_STREAMS:
-            log.info("Not resuming %s yet: at the %d-server limit", guild.name, MAX_STREAMS)
+        if len(self.players) >= self.slot_limit(guild.id):
+            log.info("Not resuming %s yet: at the %d-server limit", guild.name, self.slot_limit(guild.id))
             return False
         if not listener_ids(channel, guild.me.id):
             return False                      # nobody there; resume when someone joins
