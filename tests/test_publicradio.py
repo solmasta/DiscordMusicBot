@@ -321,6 +321,31 @@ class Upkeep(unittest.IsolatedAsyncioTestCase):
         self.assertIn(1, self.radio.players)
         self.assertTrue(self.vc.connected)
 
+    async def test_free_session_limit_warns_then_stops_but_premium_runs_on(self):
+        self.ch.voice_states = {1: object()}                       # someone is listening
+        with mock.patch.object(P, "FREE_SESSION_S", 1000), mock.patch.object(P, "SESSION_WARN_S", 600):
+            self.player.session_start = time.monotonic() - 500      # 500s left: inside the warning window
+            await self.tick()
+            self.assertTrue(any("free plan" in t for t in self.sent))
+            self.assertIn(1, self.radio.players)
+            self.sent.clear()
+            await self.tick()
+            self.assertEqual(self.sent, [], "only warned once")
+            self.player.session_start = time.monotonic() - 2000     # over the limit
+            await self.tick()
+            self.assertNotIn(1, self.radio.players)
+            self.assertTrue(any("24/7" in t for t in self.sent))
+
+    async def test_premium_is_not_limited_by_the_free_session(self):
+        import premium as PR
+        self.bot.premium = PR.Premium(None, sku_id="111")
+        self.bot.premium.guilds.add(1)
+        self.ch.voice_states = {1: object()}
+        with mock.patch.object(P, "FREE_SESSION_S", 1000):
+            self.player.session_start = time.monotonic() - 5000
+            await self.tick()
+        self.assertIn(1, self.radio.players)
+
     async def test_waits_before_leaving_and_listeners_reset_the_timer(self):
         self.ch.voice_states = {}
         await self.tick()

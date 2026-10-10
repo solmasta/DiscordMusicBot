@@ -21,6 +21,9 @@ log = logging.getLogger("public")
 # Simultaneous servers. Each stream costs roughly 4-5% of a core (decoding + loudness leveling), and
 # a shared-cpu-1x Fly machine only guarantees 6.25% of a core, so raise this together with the machine size.
 MAX_STREAMS = int(os.getenv("MAX_PUBLIC_STREAMS", "3"))
+# Free servers can keep the radio on this long per session; premium servers run 24/7. 0 turns the limit off.
+FREE_SESSION_S = int(float(os.getenv("FREE_SESSION_HOURS", "4")) * 3600)
+SESSION_WARN_S = 600   # warn this long before a free session ends
 IDLE_LEAVE_S = int(os.getenv("IDLE_LEAVE_SECONDS", "300"))     # leave after this long with no listeners
 RESTART_LIMIT, RESTART_WINDOW_S = 4, 120                       # give up if a stream keeps dying
 # New servers start quiet; each listener can raise it for themselves (right-click the bot > User Volume,
@@ -125,6 +128,8 @@ class PublicPlayer:
     started_by: int
     volume: float = DEFAULT_VOLUME
     started_at: float = field(default_factory=time.time)
+    session_start: float = field(default_factory=time.monotonic)   # when this server's radio session began (kept across station changes)
+    session_warned: bool = False
     ended: bool = False
     started: bool = False
     lost_since: float | None = None
@@ -352,6 +357,8 @@ class PublicRadio:
 
         player = PublicPlayer(guild.id, voice.id, text_channel_id, station, url, member.id,
                               volume=existing.volume if existing else DEFAULT_VOLUME)
+        if existing:
+            player.session_start, player.session_warned = existing.session_start, existing.session_warned
         self.players[guild.id] = player
         self._play(vc, player)
         if not await self._wait_started(player):
@@ -402,6 +409,8 @@ class PublicRadio:
             return False, f"I couldn't join {voice.mention}. Check my permissions and try again."
         player = PublicPlayer(guild.id, voice.id, text_channel_id, songs[0], songs[0].url, member.id,
                               volume=existing.volume if existing else DEFAULT_VOLUME, tracks=list(songs))
+        if existing:
+            player.session_start, player.session_warned = existing.session_start, existing.session_warned
         self.players[guild.id] = player
         self._play(vc, player)
         if not await self._wait_started(player):
@@ -636,6 +645,17 @@ class PublicRadio:
                     await self._notify(player, "👋 Everyone left, so I've stopped the radio. Use `/stations browse` to start again.")
                 continue
             player.idle_since = None
+            if FREE_SESSION_S and not self.is_premium(gid):
+                left = player.session_start + FREE_SESSION_S - now
+                if left <= 0:
+                    await self.stop(guild, "free session limit")
+                    await self._notify(player, f"⏱ The free plan runs the radio for {FREE_SESSION_S // 3600 or 1} hours at a time, so I've stopped. "
+                                               "Start it again any time with `/stations play`, or get **Premium** for true 24/7: `/premium`.")
+                    continue
+                if left <= SESSION_WARN_S and not player.session_warned:
+                    player.session_warned = True
+                    await self._notify(player, f"⏱ Heads up: the free plan's radio session ends in about {max(1, int(left // 60))} minutes. "
+                                               "**Premium** keeps it on 24/7: `/premium`.")
             if player.ended and player.is_library:
                 self._advance(player)          # normally the end-of-song callback already did this
                 continue

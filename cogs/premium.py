@@ -22,7 +22,7 @@ class PremiumCog(commands.Cog):
         view.add_item(discord.ui.Button(sku_id=int(prem.sku_id)))   # Discord renders the Subscribe button
         await interaction.response.send_message(
             "This server is on the **free plan**. **Premium** adds:\n"
-            "• True **24/7**: stays on air with nobody listening\n"
+            "• True **24/7**: the radio never stops (free servers get a few hours at a time) and stays on with nobody listening\n"
             "• **25 saved favorite stations** (free servers get 3)\n"
             "• **Priority slots**: starts even when the bot is busy",
             view=view, ephemeral=True,
