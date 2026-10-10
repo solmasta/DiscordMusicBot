@@ -151,6 +151,12 @@ class PublicRadio:
         self._resumed = False
         self._tasks: set[asyncio.Task] = set()
 
+    def slot_limit(self, guild_id: int | None) -> int:
+        """How many servers may be playing when this one asks: premium servers get a few reserved extras."""
+        prem = getattr(self.bot, "premium", None)
+        extra = prem.extra_slots(guild_id) if prem is not None else 0
+        return MAX_STREAMS + (extra if isinstance(extra, int) else 0)
+
     # ---- saved settings
     async def start(self):
         """Open the settings store and load what each server had playing. Never blocks the radio:
@@ -266,8 +272,9 @@ class PublicRadio:
         if now - self._cooldown.get(member.id, 0) < 4:
             return None, None, "Easy there, give it a few seconds before changing again."
         existing = self.players.get(guild.id)
-        if existing is None and len(self.players) >= MAX_STREAMS:
-            return None, None, "I'm busy playing in a lot of servers right now. Please try again in a few minutes."
+        if existing is None and len(self.players) >= self.slot_limit(guild.id):
+            hint = " Premium servers get priority slots: see `/premium`." if getattr(getattr(self.bot, "premium", None), "enabled", False) is True else ""
+            return None, None, "I'm busy playing in a lot of servers right now. Please try again in a few minutes." + hint
         if not self.may_control(member, existing):
             return None, None, "Someone else is controlling the radio here. Join their voice channel, or ask a server manager."
         perms = voice.permissions_for(guild.me)
@@ -494,8 +501,8 @@ class PublicRadio:
         if not isinstance(channel, discord.VoiceChannel):
             await self.forget(gid)            # the channel was deleted
             return False
-        if len(self.players) >= MAX_STREAMS:
-            log.info("Not resuming %s yet: at the %d-server limit", guild.name, MAX_STREAMS)
+        if len(self.players) >= self.slot_limit(guild.id):
+            log.info("Not resuming %s yet: at the %d-server limit", guild.name, self.slot_limit(guild.id))
             return False
         if not listener_ids(channel, guild.me.id):
             return False                      # nobody there; resume when someone joins
