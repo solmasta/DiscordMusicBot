@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS guild_favorites (
     added_at     REAL    NOT NULL,
     PRIMARY KEY (guild_id, station_uuid)
 );
+CREATE TABLE IF NOT EXISTS guild_theme (
+    guild_id INTEGER PRIMARY KEY,
+    name     TEXT,
+    color    INTEGER,
+    tagline  TEXT,
+    logo     BLOB
+);
 CREATE TABLE IF NOT EXISTS user_area (
     user_id    INTEGER PRIMARY KEY,
     state      TEXT NOT NULL,
@@ -224,3 +231,20 @@ class Store:
             except Exception as e:
                 log.warning("Skipping an unreadable favorite for server %s: %s", gid, e)
         return out
+
+    # ---- premium server themes
+    async def save_theme(self, t):
+        await asyncio.to_thread(
+            self._run,
+            "INSERT INTO guild_theme (guild_id, name, color, tagline, logo) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET name=excluded.name, color=excluded.color, tagline=excluded.tagline, logo=excluded.logo",
+            (t.guild_id, t.name, t.color, t.tagline, t.logo),
+        )
+
+    async def delete_theme(self, guild_id: int):
+        await asyncio.to_thread(self._run, "DELETE FROM guild_theme WHERE guild_id=?", (guild_id,))
+
+    async def all_themes(self) -> dict:
+        from theme import Theme
+        rows = await asyncio.to_thread(self._run, "SELECT guild_id, name, color, tagline, logo FROM guild_theme", (), True)
+        return {g: Theme(g, n, c, t, bytes(l) if l else None) for g, n, c, t, l in rows}

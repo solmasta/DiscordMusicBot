@@ -15,6 +15,7 @@ from discord.ext import tasks
 import directory as D
 from library import ffmpeg_before
 from store import SavedRadio, Store
+from theme import Theme
 
 log = logging.getLogger("public")
 
@@ -152,6 +153,7 @@ class PublicRadio:
         self._cooldown: dict[int, float] = {}
         self._saved: dict[int, SavedRadio] = {}     # what is stored, so joins don't need a database read
         self._areas: dict[int, tuple[str, str | None]] = {}   # listener -> (state, city) they last picked from
+        self._themes: dict[int, Theme] = {}                   # server -> its premium theme (applied only while premium)
         self._favs: dict[int, dict[str, D.Station]] = {}      # server -> saved favorite stations
         self._panels: dict[int, tuple[int, int]] = {}         # server -> (channel, message) of its control panel
         self._resuming: set[int] = set()
@@ -174,6 +176,7 @@ class PublicRadio:
             self._areas = await self.store.all_areas()
             self._panels = await self.store.all_panels()
             self._favs = await self.store.all_favorites()
+            self._themes = await self.store.all_themes()
             log.info("Loaded saved radio settings for %d server(s) and %d listener area(s)", len(self._saved), len(self._areas))
         except Exception as e:
             log.error("Saved settings are unavailable (%s); the radio will work but won't be remembered", e)
@@ -223,6 +226,26 @@ class PublicRadio:
         cog = self.bot.get_cog("Stations")
         if cog is not None and guild_id in self._panels:
             self._spawn(cog.update_panel(guild_id))
+
+    # ---- premium themes
+    def theme_for(self, guild_id: int | None) -> Theme | None:
+        """The server's theme, only while it has premium (the saved theme is kept if premium lapses)."""
+        theme = self._themes.get(guild_id)
+        return theme if theme is not None and self.is_premium(guild_id) else None
+
+    def saved_theme(self, guild_id: int) -> Theme:
+        return self._themes.get(guild_id) or Theme(guild_id)
+
+    async def save_theme(self, theme: Theme):
+        if theme.is_empty:
+            self._themes.pop(theme.guild_id, None)
+        else:
+            self._themes[theme.guild_id] = theme
+        try:
+            await (self.store.delete_theme(theme.guild_id) if theme.is_empty else self.store.save_theme(theme))
+        except Exception as e:
+            log.warning("Could not save a server theme: %s", e)
+        self.changed(theme.guild_id)         # redraw the live panel with the new look
 
     # ---- favorites (3 free, many more with premium)
     def is_premium(self, guild_id: int | None) -> bool:

@@ -76,7 +76,7 @@ class Stations(commands.Cog):
             await interaction.response.send_message("Nothing is playing. Use `/stations browse` or the **Find a station** button.", ephemeral=True)
             return
         await interaction.response.defer()
-        embed, card = await now_playing(player.station, "Now playing")
+        embed, card = await now_playing(player.station, "Now playing", theme=self.bot.public.theme_for(interaction.guild_id))
         extra = {"file": card} if card else {}
         await interaction.followup.send(embed=embed, view=RemoteView(self), **extra)
 
@@ -124,7 +124,7 @@ class Stations(commands.Cog):
             channel = guild.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
             message = await channel.fetch_message(message_id)
             player = self.bot.public.players.get(guild_id)
-            embed, files = await panel_content(player, self._who(guild, player))
+            embed, files = await panel_content(player, self._who(guild, player), theme=self.bot.public.theme_for(guild_id))
             await message.edit(embed=embed, attachments=files, view=RemoteView(self))
         except (discord.NotFound, discord.Forbidden):
             log.info("Control panel in server %s is gone; no longer updating it", guild_id)
@@ -232,7 +232,7 @@ class Stations(commands.Cog):
         if self.is_home(interaction.guild_id):
             await interaction.followup.send(f"✅ Now playing **{clean(station.name)}** ({clean(where)}). The radio card updates in a few seconds.", ephemeral=True)
             return
-        embed, card = await now_playing(station, "Now playing", by=interaction.user.display_name)
+        embed, card = await now_playing(station, "Now playing", by=interaction.user.display_name, theme=self.bot.public.theme_for(interaction.guild_id))
         extra = {"file": card} if card else {}
         try:
             if self.bot.public.panel_for(interaction.guild_id):
@@ -288,7 +288,7 @@ class Stations(commands.Cog):
             await interaction.response.send_message("You need the **Manage Server** permission to post the panel.", ephemeral=True)
             return
         player = self.bot.public.players.get(interaction.guild_id)
-        embed, files = await panel_content(player, self._who(interaction.guild, player))
+        embed, files = await panel_content(player, self._who(interaction.guild, player), theme=self.bot.public.theme_for(interaction.guild_id))
         await interaction.response.send_message(embed=embed, view=RemoteView(self), files=files)
         message = await interaction.original_response()
         await self.bot.public.set_panel(interaction.guild_id, message.channel.id, message.id)

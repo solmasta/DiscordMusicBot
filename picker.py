@@ -9,6 +9,7 @@ import discord
 
 import directory as dirmod
 import visuals
+from theme import Theme
 
 PAGE = 25   # Discord allows at most 25 options in one select menu
 FOOTER = "Station list: Radio Browser (radio-browser.info) · Streams belong to their stations"
@@ -46,35 +47,69 @@ def brand_file() -> discord.File | None:
         return None
 
 
-_cards: dict[str, bytes] = {}
+_cards: dict[tuple, bytes] = {}
 
 
-async def now_playing(station, headline: str, by: str | None = None) -> tuple[discord.Embed, discord.File | None]:
+def _t(theme):
+    """Only a real Theme counts; anything else means the default look."""
+    return theme if isinstance(theme, Theme) else None
+
+
+async def now_playing(station, headline: str, by: str | None = None, theme=None) -> tuple[discord.Embed, discord.File | None]:
     """The 'now playing' message: an embed with a drawn station card (cached per station)."""
-    embed = station_embed(station, headline)
+    theme = _t(theme)
+    embed = station_embed(station, headline, theme=theme)
     if by:
         embed.set_author(name=f"Tuned by {by}")
-    key = station.uuid
+    accent = theme.accent if theme else None
+    logo = theme.logo if theme else None
+    key = (station.uuid, accent, hash(logo) if logo else None)
     png = _cards.get(key)
     if png is None:
         quality = " · ".join(x for x in (station.codec, f"{station.bitrate} kbps" if station.bitrate else "") if x)
         try:
             png = await asyncio.to_thread(visuals.render_station_card, station.name, station.place or "", sorted(station.genres), quality,
-                                          bool(getattr(station, "is_song", False)))
+                                          bool(getattr(station, "is_song", False)), accent, logo)
         except Exception:
             return embed, None
         if len(_cards) >= 64:
             _cards.pop(next(iter(_cards)))
         _cards[key] = png
-    embed = station_embed(station, headline, detailed=False)     # the card already shows place, genre and quality
+    embed = station_embed(station, headline, detailed=False, theme=theme)     # the card already shows place, genre and quality
     if by:
         embed.set_author(name=f"Tuned by {by}")
     embed.set_image(url="attachment://station.png")
     return embed, discord.File(io.BytesIO(png), filename="station.png")
 
 
-def station_embed(station, headline: str, detailed: bool = True) -> discord.Embed:
-    embed = discord.Embed(title=f"{'🎵' if getattr(station, 'is_song', False) else '📻'} {headline}", description=f"**{clean(station.name)}**", color=BRAND)
+def themed(embed: discord.Embed, theme, default_footer: str) -> discord.Embed:
+    """Apply a premium server theme to an embed: its colour and tagline (footer). The logo goes on the card image."""
+    if theme is None:
+        return embed
+    if theme.color is not None:
+        embed.color = discord.Color(theme.color)
+    if theme.tagline:
+        embed.set_footer(text=theme.tagline)
+    return embed
+
+
+def theme_files(theme) -> list[discord.File]:
+    return [discord.File(io.BytesIO(theme.logo), filename="logo.png")] if theme and theme.logo else []
+
+
+def station_embed(station, headline: str, detailed: bool = True, theme=None) -> discord.Embed:
+    theme = _t(theme)
+    title = f"{'🎵' if getattr(station, 'is_song', False) else '📻'} {clean(theme.name) if theme and theme.name else headline}"
+    embed = station_embed_base(station, title, detailed)
+    credit = getattr(station, "credit", "")
+    themed(embed, theme, FOOTER)
+    if credit:
+        embed.set_footer(text=credit)       # a song's licence credit always stays visible
+    return embed
+
+
+def station_embed_base(station, title: str, detailed: bool) -> discord.Embed:
+    embed = discord.Embed(title=title, description=f"**{clean(station.name)}**", color=BRAND)
     credit = getattr(station, "credit", "")
     if not detailed:
         if station.homepage.startswith(("http://", "https://")):
@@ -353,7 +388,7 @@ class GuidedPicker(discord.ui.View):
         if self.cog.is_home(interaction.guild_id):
             await interaction.followup.send(f"✅ Now playing **{clean(station.name)}**. The radio card updates in a few seconds.", ephemeral=True)
             return
-        embed, card = await now_playing(station, "Now playing", by=interaction.user.display_name)
+        embed, card = await now_playing(station, "Now playing", by=interaction.user.display_name, theme=self.cog.bot.public.theme_for(interaction.guild_id))
         player = self.cog.bot.public.players.get(interaction.guild_id)
         tip = ""
         if player is not None and getattr(player, "volume", 1) <= 0.5:
@@ -374,15 +409,19 @@ IDLE_TEXT = ("**Pick your state below**, then your city, then a station.\n"
              "Join a voice channel first and I'll play it for you.")
 
 
-async def panel_content(player, who: str | None = None) -> tuple[discord.Embed, list[discord.File]]:
+async def panel_content(player, who: str | None = None, theme=None) -> tuple[discord.Embed, list[discord.File]]:
     """What a server's live control panel shows: the station card while playing, a welcome when idle."""
+    theme = _t(theme)
     if player is not None:
-        embed, card = await now_playing(player.station, "Now playing", by=who)
-        if card:
-            return embed, [card]
-        return embed, []
-    embed = discord.Embed(title="📻 Radio from where you live", description=IDLE_TEXT, color=BRAND)
+        embed, card = await now_playing(player.station, "Now playing", by=who, theme=theme)
+        return embed, ([card] if card else [])
+    embed = discord.Embed(title=f"📻 {clean(theme.name)}" if theme and theme.name else "📻 Radio from where you live",
+                          description=IDLE_TEXT, color=BRAND)
     embed.set_footer(text=FOOTER)
+    themed(embed, theme, FOOTER)
+    if theme and theme.logo:
+        embed.set_thumbnail(url="attachment://logo.png")
+        return embed, theme_files(theme)
     icon = brand_file()
     if icon:
         embed.set_thumbnail(url="attachment://icon.png")
