@@ -1,19 +1,30 @@
-# fly.toml app configuration file generated for discordmusicbot-k-zztq on 2026-10-03T23:44:53Z
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
-app = 'discordmusicbot-k-zztq'
-primary_region = 'ams'
+app = "discordmusicbot-k-zztq"
+primary_region = "ord"
 
 [build]
 
-# Discord bot worker: no inbound HTTP, must stay running 24/7.
-[processes]
-  app = 'python bot.py'
+[env]
+GUILD_ID = "984970543168098324"
+RADIO_URL = "https://playerservices.streamtheworld.com/api/livestream-redirect/WKQXFM.mp3"
+RADIO_CHANNEL_ID = "985413944514600970"
+
+# Secrets (set once via CLI, never committed):
+#   fly secrets set DISCORD_TOKEN=your_token_here
+
+# Discord bots are workers — no inbound HTTP needed.
+# Removing [http_service] prevents Fly.io from auto-stopping the machine
+# when there is no HTTP traffic (the bot stays connected via WebSocket).
+
+[[restart]]
+  policy = "always"
+  max_retries = 10
 
 [[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
-  processes = ['app']
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+# Saved per-server radio settings live on a persistent volume (create it once with:
+#   fly volumes create crue_data --size 1 --region ord --app discordmusicbot-k-zztq)
+[mounts]
+  source = "crue_data"
+  destination = "/data"

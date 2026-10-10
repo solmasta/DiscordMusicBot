@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
-# Install FFmpeg
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && \
+# FFmpeg + libs required by discord.py[voice] / PyNaCl
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg libffi-dev libsodium-dev libopus0 libopus-dev fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -10,4 +11,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "bot.py"]
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-u", "bot.py"]

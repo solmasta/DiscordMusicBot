@@ -121,3 +121,21 @@ yt-dlp supports 1000+ sites including:
 - Twitch streams
 - Direct MP3/audio URLs
 - Many more
+
+
+## Song library (`/library`)
+
+Browse songs by genre and play them. Two sources:
+
+- **Free music** (every server): Creative Commons songs. It works with no setup, using ccMixter. For a bigger
+  catalog and cover art you can add Jamendo (free, but their developer accounts are approved by hand):
+  make an app at https://developer.jamendo.com, then
+  `fly secrets set JAMENDO_CLIENT_ID=your_client_id --app discordmusicbot-k-zztq`.
+  With a key, Jamendo is tried first and ccMixter fills in any genre it has nothing for. Each song's licence
+  is shown on its card. Jamendo's free API is for non-commercial use; if you start charging for the bot, get
+  a Jamendo licence first, and check each ccMixter track's licence (some are non-commercial).
+- **Popular hits** (home server only): a curated list per genre, found on YouTube when played. These are not
+  licensed for a public bot, so they never play on other servers.
+
+Songs play on the home radio (the rotation pauses until they finish or someone taps **Back to rotation**), or
+through the public player on other servers (the list repeats until stopped; **Skip song** moves on).

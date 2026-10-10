@@ -7,3 +7,7 @@ build/
 .venv/
 venv/
 *.log
+data/
+*.db
+*.db-wal
+*.db-shm

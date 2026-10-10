@@ -1,4 +1,5 @@
 import asyncio
+import os
 import logging
 import re
 from collections import deque
@@ -60,18 +61,22 @@ class GuildState:
 
 async def extract_info(url: str) -> dict:
     """Run yt-dlp in a thread pool to avoid blocking the event loop."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     opts = dict(YTDL_OPTIONS)
     with yt_dlp.YoutubeDL(opts) as ydl:
         data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
     # If a playlist was returned, grab first entry
     if "entries" in data:
-        data = data["entries"][0]
+        entries = [e for e in (data["entries"] or []) if e]
+        if not entries:
+            raise yt_dlp.utils.DownloadError("No playable results found.")
+        data = entries[0]
     return data
 
 
 def build_track(data: dict, requester: discord.Member, original_url: str) -> Track:
-    stream_url = data.get("url") or data.get("formats", [{}])[0].get("url", "")
+    formats = data.get("formats") or [{}]
+    stream_url = data.get("url") or formats[0].get("url", "")
     return Track(
         url=original_url,
         stream_url=stream_url,
@@ -107,6 +112,14 @@ class Music(commands.Cog):
 
     def cog_unload(self):
         self._reconnect_task.cancel()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """The music commands are for the home server only (public servers use /stations)."""
+        home = os.getenv("GUILD_ID")
+        if home and str(interaction.guild_id) != home:
+            await interaction.response.send_message("That command isn't available here. Try `/stations browse`.", ephemeral=True)
+            return False
+        return True
 
     def _get_state(self, guild_id: int) -> GuildState:
         if guild_id not in self._states:
@@ -213,6 +226,21 @@ class Music(commands.Cog):
     @app_commands.describe(query="YouTube/SoundCloud URL, direct audio URL, or search query")
     async def play(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer()
+
+        # Strip iframe embed HTML (e.g. pasted from TuneIn's embed widget)
+        iframe_src = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', query, re.IGNORECASE)
+        if iframe_src:
+            query = iframe_src.group(1)
+
+        # TuneIn embed/station URLs don't work with yt-dlp — redirect to radio commands
+        if re.search(r"tunein\.com/(embed|radio)/", query, re.IGNORECASE):
+            await interaction.followup.send(
+                "TuneIn URLs can't be played with `/play`. "
+                "Use `/listen` to browse the radio rotation or `/stations` to see what's on!",
+                ephemeral=True,
+            )
+            return
+
         state = self._get_state(interaction.guild_id)
         state.text_channel = interaction.channel
 
@@ -342,11 +370,14 @@ class Music(commands.Cog):
     async def volume(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 100]):
         state = self._get_state(interaction.guild_id)
         state.volume = level / 100
+        self.bot.radio_volume = state.volume
         vc = interaction.guild.voice_client
         if vc and vc.source:
             # Wrap in PCMVolumeTransformer if not already
             if isinstance(vc.source, discord.PCMVolumeTransformer):
                 vc.source.volume = state.volume
+        if hasattr(self.bot, "_apply_volume"):
+            self.bot._apply_volume()   # keeps the radio muted if a joiner is still deciding
         await interaction.response.send_message(f"Volume set to **{level}%**.")
 
     @app_commands.command(name="loop", description="Toggle loop for the current track")
@@ -428,6 +459,66 @@ class Music(commands.Cog):
         state = self._get_state(interaction.guild_id)
         state.queue.clear()
         await interaction.response.send_message("Queue cleared.")
+
+    @app_commands.command(name="help", description="Show all music bot commands")
+    async def help(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="📻 Crüe FM — Commands",
+            description="Motley Crüe Inc's 24/7 radio bot. Play music from YouTube, SoundCloud, direct URLs and more.",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="▶️ Playback",
+            value=(
+                "`/play <url or search>` — Play a song or add to queue\n"
+                "`/pause` — Pause the current song\n"
+                "`/resume` — Resume playback\n"
+                "`/stop` — Stop and clear the queue\n"
+                "`/skip` — Skip to the next song\n"
+                "`/volume <1–100>` — Set the volume"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 Queue",
+            value=(
+                "`/queue` — Show the current queue\n"
+                "`/nowplaying` — Show what's playing now\n"
+                "`/shuffle` — Shuffle the queue\n"
+                "`/remove <position>` — Remove a song from the queue\n"
+                "`/move <from> <to>` — Reorder a song in the queue\n"
+                "`/clearqueue` — Clear queue (keeps current song)"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔁 Loop",
+            value=(
+                "`/loop` — Loop the current track\n"
+                "`/loopqueue` — Loop the entire queue"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔊 Voice",
+            value=(
+                "`/join` — Pull bot into your voice channel\n"
+                "`/leave` — Disconnect bot and clear queue"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📻 Radio",
+            value=(
+                "`/listen` — Get clickable links to listen in browser (no voice needed)\n"
+                "`/stations` — List all stations in the rotation\n"
+                "`/nextstation` — Skip to the next radio station\n"
+                "`/addstation <url>` — Add a TuneIn or stream URL to the rotation"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Crüe FM 📻 — Motley Crüe Inc's station. /play works with YouTube, SoundCloud, or just a song name!")
+        await interaction.response.send_message(embed=embed)
 
 
 async def setup(bot: commands.Bot):
