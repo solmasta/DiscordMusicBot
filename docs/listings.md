@@ -15,7 +15,7 @@ limits are from memory, so trim if a form complains.
 |---|---|
 | `[landing page URL]` | |
 | `[Discord invite]` | |
-| `[premium features]` | |
+| `[premium features]` | true 24/7 (stays on air with nobody listening), 25 saved favorite stations (free: 3), priority slots, priority support |
 | `[$X/month per server]` | |
 
 ---

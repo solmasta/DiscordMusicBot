@@ -311,6 +311,16 @@ class Upkeep(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.vc.connected)
         self.assertTrue(any("Everyone left" in t for t in self.sent))
 
+    async def test_premium_server_never_leaves_an_empty_channel(self):
+        import premium as PR
+        self.bot.premium = PR.Premium(None, sku_id="111")
+        self.bot.premium.guilds.add(1)
+        self.ch.voice_states = {}
+        with mock.patch.object(P, "IDLE_LEAVE_S", 0):
+            await self.tick()
+        self.assertIn(1, self.radio.players)
+        self.assertTrue(self.vc.connected)
+
     async def test_waits_before_leaving_and_listeners_reset_the_timer(self):
         self.ch.voice_states = {}
         await self.tick()

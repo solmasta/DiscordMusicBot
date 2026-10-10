@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import discord
 from discord.ext import tasks
 
+import directory as D
 from library import ffmpeg_before
 from store import SavedRadio, Store
 
@@ -146,6 +147,7 @@ class PublicRadio:
         self._cooldown: dict[int, float] = {}
         self._saved: dict[int, SavedRadio] = {}     # what is stored, so joins don't need a database read
         self._areas: dict[int, tuple[str, str | None]] = {}   # listener -> (state, city) they last picked from
+        self._favs: dict[int, dict[str, D.Station]] = {}      # server -> saved favorite stations
         self._panels: dict[int, tuple[int, int]] = {}         # server -> (channel, message) of its control panel
         self._resuming: set[int] = set()
         self._resumed = False
@@ -166,6 +168,7 @@ class PublicRadio:
             self._saved = {row.guild_id: row for row in await self.store.all()}
             self._areas = await self.store.all_areas()
             self._panels = await self.store.all_panels()
+            self._favs = await self.store.all_favorites()
             log.info("Loaded saved radio settings for %d server(s) and %d listener area(s)", len(self._saved), len(self._areas))
         except Exception as e:
             log.error("Saved settings are unavailable (%s); the radio will work but won't be remembered", e)
@@ -215,6 +218,42 @@ class PublicRadio:
         cog = self.bot.get_cog("Stations")
         if cog is not None and guild_id in self._panels:
             self._spawn(cog.update_panel(guild_id))
+
+    # ---- favorites (3 free, many more with premium)
+    def is_premium(self, guild_id: int | None) -> bool:
+        prem = getattr(self.bot, "premium", None)
+        return bool(prem is not None and prem.is_premium(guild_id) is True)
+
+    def favorites_for(self, guild_id: int) -> list:
+        return list(self._favs.get(guild_id, {}).values())
+
+    def favorite_limit(self, guild_id: int) -> int:
+        prem = getattr(self.bot, "premium", None)
+        limit = prem.favorite_limit(guild_id) if prem is not None else None
+        return limit if isinstance(limit, int) else 3
+
+    async def add_favorite(self, guild_id: int, station) -> str | None:
+        """Save a station. Returns None on success, or why it couldn't be saved."""
+        favs = self._favs.setdefault(guild_id, {})
+        if station.uuid in favs:
+            return "That station is already in this server's favorites."
+        if len(favs) >= self.favorite_limit(guild_id):
+            upsell = " Premium servers can save more: see `/premium`." if getattr(getattr(self.bot, "premium", None), "enabled", False) is True else ""
+            return f"This server's favorites are full ({self.favorite_limit(guild_id)}). Remove one with `/stations unfavorite`." + upsell
+        favs[station.uuid] = station
+        try:
+            await self.store.add_favorite(guild_id, station)
+        except Exception as e:
+            log.warning("Could not save a favorite: %s", e)
+        return None
+
+    async def remove_favorite(self, guild_id: int, uuid: str) -> bool:
+        had = self._favs.get(guild_id, {}).pop(uuid, None) is not None
+        try:
+            await self.store.remove_favorite(guild_id, uuid)
+        except Exception as e:
+            log.warning("Could not remove a favorite: %s", e)
+        return had
 
     def area_for(self, user_id: int) -> tuple[str, str | None] | None:
         return self._areas.get(user_id)
@@ -524,8 +563,8 @@ class PublicRadio:
         if len(self.players) >= self.slot_limit(guild.id):
             log.info("Not resuming %s yet: at the %d-server limit", guild.name, self.slot_limit(guild.id))
             return False
-        if not listener_ids(channel, guild.me.id):
-            return False                      # nobody there; resume when someone joins
+        if not listener_ids(channel, guild.me.id) and not self.is_premium(gid):
+            return False                      # nobody there; resume when someone joins (premium resumes anyway)
         perms = channel.permissions_for(guild.me)
         if not (perms.connect and perms.speak):
             log.info("Not resuming %s: missing Connect/Speak in the saved channel", guild.name)
@@ -589,6 +628,8 @@ class PublicRadio:
             player.lost_since = None
             humans = listener_ids(vc.channel, guild.me.id)
             if not humans:
+                if self.is_premium(gid):
+                    continue                    # premium servers get true 24/7: stay on air with nobody listening
                 player.idle_since = player.idle_since or now
                 if now - player.idle_since >= IDLE_LEAVE_S:
                     await self.stop(guild, "nobody listening")

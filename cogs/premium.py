@@ -16,13 +16,15 @@ class PremiumCog(commands.Cog):
             await interaction.response.send_message("Premium isn't available yet. Everything is free for now.", ephemeral=True)
             return
         if prem.is_premium(interaction.guild_id):
-            await interaction.response.send_message("⭐ This server has **Premium**. Thank you for supporting Crüe FM!", ephemeral=True)
+            await interaction.response.send_message("⭐ This server has **Premium**. Thank you for supporting Crüe FM! You get 24/7 radio, 25 favorites and priority slots.", ephemeral=True)
             return
         view = discord.ui.View()
         view.add_item(discord.ui.Button(sku_id=int(prem.sku_id)))   # Discord renders the Subscribe button
         await interaction.response.send_message(
-            "This server is on the **free plan**. Premium servers get priority streams, so the radio still "
-            "starts when the bot is busy.",
+            "This server is on the **free plan**. **Premium** adds:\n"
+            "• True **24/7**: stays on air with nobody listening\n"
+            "• **25 saved favorite stations** (free servers get 3)\n"
+            "• **Priority slots**: starts even when the bot is busy",
             view=view, ephemeral=True,
         )
 

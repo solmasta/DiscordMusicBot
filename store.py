@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS guild_panel (
     channel_id INTEGER NOT NULL,
     message_id INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS guild_favorites (
+    guild_id     INTEGER NOT NULL,
+    station_uuid TEXT    NOT NULL,
+    station_json TEXT    NOT NULL,
+    added_at     REAL    NOT NULL,
+    PRIMARY KEY (guild_id, station_uuid)
+);
 CREATE TABLE IF NOT EXISTS user_area (
     user_id    INTEGER PRIMARY KEY,
     state      TEXT NOT NULL,
@@ -194,3 +201,26 @@ class Store:
     async def all_panels(self) -> dict[int, tuple[int, int]]:
         rows = await asyncio.to_thread(self._run, "SELECT guild_id, channel_id, message_id FROM guild_panel", (), True)
         return {g: (c, m) for g, c, m in rows}
+
+    # ---- each server's saved favorite stations
+    async def add_favorite(self, guild_id: int, station: D.Station):
+        await asyncio.to_thread(
+            self._run,
+            "INSERT INTO guild_favorites (guild_id, station_uuid, station_json, added_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, station_uuid) DO UPDATE SET station_json=excluded.station_json",
+            (guild_id, station.uuid, station_to_json(station), time.time()),
+        )
+
+    async def remove_favorite(self, guild_id: int, station_uuid: str):
+        await asyncio.to_thread(self._run, "DELETE FROM guild_favorites WHERE guild_id=? AND station_uuid=?", (guild_id, station_uuid))
+
+    async def all_favorites(self) -> dict[int, dict[str, D.Station]]:
+        rows = await asyncio.to_thread(
+            self._run, "SELECT guild_id, station_uuid, station_json FROM guild_favorites ORDER BY added_at", (), True)
+        out: dict[int, dict[str, D.Station]] = {}
+        for gid, uuid, sj in rows:
+            try:
+                out.setdefault(gid, {})[uuid] = station_from_json(sj)
+            except Exception as e:
+                log.warning("Skipping an unreadable favorite for server %s: %s", gid, e)
+        return out

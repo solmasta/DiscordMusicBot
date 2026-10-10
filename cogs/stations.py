@@ -293,11 +293,85 @@ class Stations(commands.Cog):
         message = await interaction.original_response()
         await self.bot.public.set_panel(interaction.guild_id, message.channel.id, message.id)
 
+    # ---- favorites
+    @stations.command(name="favorite", description="Save the station that's playing to this server's favorites")
+    async def favorite(self, interaction: discord.Interaction):
+        if not await self._gate(interaction):
+            return
+        pub = self.bot.public
+        player = pub.players.get(interaction.guild_id)
+        if not player or not isinstance(player.station, dirmod.Station):
+            await interaction.response.send_message("Start a radio station first, then save it.", ephemeral=True)
+            return
+        if not pub.may_control(interaction.user, player):
+            await interaction.response.send_message("Someone else is controlling the radio here.", ephemeral=True)
+            return
+        problem = await pub.add_favorite(interaction.guild_id, player.station)
+        if problem:
+            await interaction.response.send_message(problem, ephemeral=True)
+            return
+        n, cap = len(pub.favorites_for(interaction.guild_id)), pub.favorite_limit(interaction.guild_id)
+        await interaction.response.send_message(f"⭐ Saved **{clean(player.station.name)}** ({n}/{cap}). Play it any time with `/stations favorites`.")
+
+    @stations.command(name="favorites", description="Play one of this server's saved stations")
+    async def favorites(self, interaction: discord.Interaction):
+        if not await self._gate(interaction):
+            return
+        favs = self.bot.public.favorites_for(interaction.guild_id)
+        if not favs:
+            await interaction.response.send_message("No favorites yet. Play a station and run `/stations favorite` to save it.", ephemeral=True)
+            return
+        await interaction.response.send_message("⭐ Pick a favorite to play:", view=FavoritesView(self, favs, remove=False), ephemeral=True)
+
+    @stations.command(name="unfavorite", description="Remove a saved station (managers only)")
+    @app_commands.default_permissions(manage_guild=True)
+    async def unfavorite(self, interaction: discord.Interaction):
+        if not await self._gate(interaction):
+            return
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need the **Manage Server** permission to remove favorites.", ephemeral=True)
+            return
+        favs = self.bot.public.favorites_for(interaction.guild_id)
+        if not favs:
+            await interaction.response.send_message("There are no favorites to remove.", ephemeral=True)
+            return
+        await interaction.response.send_message("Pick a favorite to remove:", view=FavoritesView(self, favs, remove=True), ephemeral=True)
+
     @stations.command(name="forget", description="Forget the area I remembered for you")
     async def forget(self, interaction: discord.Interaction):
         had = await self.bot.public.forget_area(interaction.user.id)
         await interaction.response.send_message(
             "Done. I've forgotten your area." if had else "I hadn't saved an area for you.", ephemeral=True)
+
+
+class FavoritesView(discord.ui.View):
+    """A drop-down of this server's favorite stations: pick one to play, or (managers) to remove."""
+
+    def __init__(self, cog, favs: list, remove: bool):
+        super().__init__(timeout=300)
+        self.cog, self.remove = cog, remove
+        self.by_uuid = {s.uuid: s for s in favs[:25]}
+        select = discord.ui.Select(
+            placeholder="Choose a station…",
+            options=[discord.SelectOption(label=clean(s.name)[:100], value=s.uuid, description=clean(s.place)[:100] or None)
+                     for s in self.by_uuid.values()],
+        )
+        select.callback = self._picked
+        self.add_item(select)
+
+    async def _picked(self, interaction: discord.Interaction):
+        station = self.by_uuid.get(interaction.data["values"][0])
+        if station is None:
+            await interaction.response.send_message("That favorite is gone.", ephemeral=True)
+            return
+        if self.remove:
+            await self.cog.bot.public.remove_favorite(interaction.guild_id, station.uuid)
+            await interaction.response.edit_message(content=f"Removed **{clean(station.name)}**.", view=None)
+            return
+        await interaction.response.defer(ephemeral=True)
+        ok, message = await self.cog.tune_here(interaction, station)
+        await interaction.followup.send(f"✅ {message}" if ok else f"❌ {message}", ephemeral=True)
+        self.stop()
 
 
 async def setup(bot):
