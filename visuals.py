@@ -284,9 +284,10 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int, lines: int) ->
     return [_fit_text(draw, line, font, max_w) for line in out if line]
 
 
-def render_station_card(name: str, place: str = "", genres: tuple[str, ...] | list[str] = (), quality: str = "", song: bool = False) -> bytes:
+def render_station_card(name: str, place: str = "", genres: tuple[str, ...] | list[str] = (), quality: str = "", song: bool = False,
+                        accent: tuple[int, int, int] | None = None, logo: bytes | None = None) -> bytes:
     """A 720x240 PNG: a tuning dial on the left, the station's name, place and genres on the right."""
-    accent = station_accent(name)
+    accent = accent or station_accent(name)
     dim = tuple(int(c * 0.16) for c in accent)
     im = Image.new("RGB", (CARD_W, CARD_H))
     px = ImageDraw.Draw(im)
@@ -340,6 +341,13 @@ def render_station_card(name: str, place: str = "", genres: tuple[str, ...] | li
         d.rounded_rectangle((chip_x, CARD_H - 42, chip_x + gw, CARD_H - 18), 12, outline=accent, width=2)
         d.text((chip_x + gw / 2, CARD_H - 30), g, font=_font(14), fill=(235, 235, 245), anchor="mm")
         chip_x += gw + 8
+    if logo:                                   # a premium server's own logo, top right
+        try:
+            mark = Image.open(io.BytesIO(logo)).convert("RGBA")
+            mark.thumbnail((56, 56))
+            base.alpha_composite(mark, (CARD_W - 18 - mark.width, 14))
+        except Exception:
+            pass
     buf = io.BytesIO()
     base.convert("RGB").save(buf, "PNG", optimize=True)
     return buf.getvalue()

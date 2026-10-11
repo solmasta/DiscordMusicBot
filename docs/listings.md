@@ -15,7 +15,7 @@ limits are from memory, so trim if a form complains.
 |---|---|
 | `[landing page URL]` | |
 | `[Discord invite]` | |
-| `[premium features]` | |
+| `[premium features]` | true 24/7 (set it once and it plays forever; free servers get a few hours at a time), custom server theme (name, colour, tagline, logo), priority slots, 25 saved favorites (free: 3), priority support |
 | `[$X/month per server]` | |
 
 ---

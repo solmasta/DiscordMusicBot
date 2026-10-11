@@ -12,14 +12,19 @@ from urllib.parse import urlsplit
 import discord
 from discord.ext import tasks
 
+import directory as D
 from library import ffmpeg_before
 from store import SavedRadio, Store
+from theme import Theme
 
 log = logging.getLogger("public")
 
 # Simultaneous servers. Each stream costs roughly 4-5% of a core (decoding + loudness leveling), and
 # a shared-cpu-1x Fly machine only guarantees 6.25% of a core, so raise this together with the machine size.
 MAX_STREAMS = int(os.getenv("MAX_PUBLIC_STREAMS", "3"))
+# Free servers can keep the radio on this long per session; premium servers run 24/7. 0 turns the limit off.
+FREE_SESSION_S = int(float(os.getenv("FREE_SESSION_HOURS", "4")) * 3600)
+SESSION_WARN_S = 600   # warn this long before a free session ends
 IDLE_LEAVE_S = int(os.getenv("IDLE_LEAVE_SECONDS", "300"))     # leave after this long with no listeners
 RESTART_LIMIT, RESTART_WINDOW_S = 4, 120                       # give up if a stream keeps dying
 # New servers start quiet; each listener can raise it for themselves (right-click the bot > User Volume,
@@ -124,6 +129,8 @@ class PublicPlayer:
     started_by: int
     volume: float = DEFAULT_VOLUME
     started_at: float = field(default_factory=time.time)
+    session_start: float = field(default_factory=time.monotonic)   # when this server's radio session began (kept across station changes)
+    session_warned: bool = False
     ended: bool = False
     started: bool = False
     lost_since: float | None = None
@@ -146,6 +153,8 @@ class PublicRadio:
         self._cooldown: dict[int, float] = {}
         self._saved: dict[int, SavedRadio] = {}     # what is stored, so joins don't need a database read
         self._areas: dict[int, tuple[str, str | None]] = {}   # listener -> (state, city) they last picked from
+        self._themes: dict[int, Theme] = {}                   # server -> its premium theme (applied only while premium)
+        self._favs: dict[int, dict[str, D.Station]] = {}      # server -> saved favorite stations
         self._panels: dict[int, tuple[int, int]] = {}         # server -> (channel, message) of its control panel
         self._resuming: set[int] = set()
         self._resumed = False
@@ -166,6 +175,8 @@ class PublicRadio:
             self._saved = {row.guild_id: row for row in await self.store.all()}
             self._areas = await self.store.all_areas()
             self._panels = await self.store.all_panels()
+            self._favs = await self.store.all_favorites()
+            self._themes = await self.store.all_themes()
             log.info("Loaded saved radio settings for %d server(s) and %d listener area(s)", len(self._saved), len(self._areas))
         except Exception as e:
             log.error("Saved settings are unavailable (%s); the radio will work but won't be remembered", e)
@@ -215,6 +226,62 @@ class PublicRadio:
         cog = self.bot.get_cog("Stations")
         if cog is not None and guild_id in self._panels:
             self._spawn(cog.update_panel(guild_id))
+
+    # ---- premium themes
+    def theme_for(self, guild_id: int | None) -> Theme | None:
+        """The server's theme, only while it has premium (the saved theme is kept if premium lapses)."""
+        theme = self._themes.get(guild_id)
+        return theme if theme is not None and self.is_premium(guild_id) else None
+
+    def saved_theme(self, guild_id: int) -> Theme:
+        return self._themes.get(guild_id) or Theme(guild_id)
+
+    async def save_theme(self, theme: Theme):
+        if theme.is_empty:
+            self._themes.pop(theme.guild_id, None)
+        else:
+            self._themes[theme.guild_id] = theme
+        try:
+            await (self.store.delete_theme(theme.guild_id) if theme.is_empty else self.store.save_theme(theme))
+        except Exception as e:
+            log.warning("Could not save a server theme: %s", e)
+        self.changed(theme.guild_id)         # redraw the live panel with the new look
+
+    # ---- favorites (3 free, many more with premium)
+    def is_premium(self, guild_id: int | None) -> bool:
+        prem = getattr(self.bot, "premium", None)
+        return bool(prem is not None and prem.is_premium(guild_id) is True)
+
+    def favorites_for(self, guild_id: int) -> list:
+        return list(self._favs.get(guild_id, {}).values())
+
+    def favorite_limit(self, guild_id: int) -> int:
+        prem = getattr(self.bot, "premium", None)
+        limit = prem.favorite_limit(guild_id) if prem is not None else None
+        return limit if isinstance(limit, int) else 3
+
+    async def add_favorite(self, guild_id: int, station) -> str | None:
+        """Save a station. Returns None on success, or why it couldn't be saved."""
+        favs = self._favs.setdefault(guild_id, {})
+        if station.uuid in favs:
+            return "That station is already in this server's favorites."
+        if len(favs) >= self.favorite_limit(guild_id):
+            upsell = " Premium servers can save more: see `/premium`." if getattr(getattr(self.bot, "premium", None), "enabled", False) is True else ""
+            return f"This server's favorites are full ({self.favorite_limit(guild_id)}). Remove one with `/stations unfavorite`." + upsell
+        favs[station.uuid] = station
+        try:
+            await self.store.add_favorite(guild_id, station)
+        except Exception as e:
+            log.warning("Could not save a favorite: %s", e)
+        return None
+
+    async def remove_favorite(self, guild_id: int, uuid: str) -> bool:
+        had = self._favs.get(guild_id, {}).pop(uuid, None) is not None
+        try:
+            await self.store.remove_favorite(guild_id, uuid)
+        except Exception as e:
+            log.warning("Could not remove a favorite: %s", e)
+        return had
 
     def area_for(self, user_id: int) -> tuple[str, str | None] | None:
         return self._areas.get(user_id)
@@ -313,6 +380,8 @@ class PublicRadio:
 
         player = PublicPlayer(guild.id, voice.id, text_channel_id, station, url, member.id,
                               volume=existing.volume if existing else DEFAULT_VOLUME)
+        if existing:
+            player.session_start, player.session_warned = existing.session_start, existing.session_warned
         self.players[guild.id] = player
         self._play(vc, player)
         if not await self._wait_started(player):
@@ -363,6 +432,8 @@ class PublicRadio:
             return False, f"I couldn't join {voice.mention}. Check my permissions and try again."
         player = PublicPlayer(guild.id, voice.id, text_channel_id, songs[0], songs[0].url, member.id,
                               volume=existing.volume if existing else DEFAULT_VOLUME, tracks=list(songs))
+        if existing:
+            player.session_start, player.session_warned = existing.session_start, existing.session_warned
         self.players[guild.id] = player
         self._play(vc, player)
         if not await self._wait_started(player):
@@ -524,8 +595,8 @@ class PublicRadio:
         if len(self.players) >= self.slot_limit(guild.id):
             log.info("Not resuming %s yet: at the %d-server limit", guild.name, self.slot_limit(guild.id))
             return False
-        if not listener_ids(channel, guild.me.id):
-            return False                      # nobody there; resume when someone joins
+        if not listener_ids(channel, guild.me.id) and not self.is_premium(gid):
+            return False                      # nobody there; resume when someone joins (premium resumes anyway)
         perms = channel.permissions_for(guild.me)
         if not (perms.connect and perms.speak):
             log.info("Not resuming %s: missing Connect/Speak in the saved channel", guild.name)
@@ -589,12 +660,25 @@ class PublicRadio:
             player.lost_since = None
             humans = listener_ids(vc.channel, guild.me.id)
             if not humans:
+                if self.is_premium(gid):
+                    continue                    # premium servers get true 24/7: stay on air with nobody listening
                 player.idle_since = player.idle_since or now
                 if now - player.idle_since >= IDLE_LEAVE_S:
                     await self.stop(guild, "nobody listening")
                     await self._notify(player, "👋 Everyone left, so I've stopped the radio. Use `/stations browse` to start again.")
                 continue
             player.idle_since = None
+            if FREE_SESSION_S and not self.is_premium(gid):
+                left = player.session_start + FREE_SESSION_S - now
+                if left <= 0:
+                    await self.stop(guild, "free session limit")
+                    await self._notify(player, f"⏱ The free plan runs the radio for {FREE_SESSION_S // 3600 or 1} hours at a time, so I've stopped. "
+                                               "Start it again any time with `/stations play`, or get **Premium** for true 24/7: `/premium`.")
+                    continue
+                if left <= SESSION_WARN_S and not player.session_warned:
+                    player.session_warned = True
+                    await self._notify(player, f"⏱ Heads up: the free plan's radio session ends in about {max(1, int(left // 60))} minutes. "
+                                               "**Premium** keeps it on 24/7: `/premium`.")
             if player.ended and player.is_library:
                 self._advance(player)          # normally the end-of-song callback already did this
                 continue

@@ -15,6 +15,10 @@ SKU_ID = os.getenv("PREMIUM_SKU_ID", "").strip()
 # so a premium server can still start when the free slots are full.
 PREMIUM_RESERVE = int(os.getenv("PREMIUM_RESERVED_STREAMS", "2"))
 
+# Saved favorite stations per server.
+FREE_FAVORITES = int(os.getenv("FREE_FAVORITES", "3"))
+PREMIUM_FAVORITES = int(os.getenv("PREMIUM_FAVORITES", "25"))
+
 
 class Premium:
     def __init__(self, bot, sku_id: str | None = None):
@@ -35,6 +39,9 @@ class Premium:
 
     def extra_slots(self, guild_id: int | None) -> int:
         return PREMIUM_RESERVE if self.is_premium(guild_id) else 0
+
+    def favorite_limit(self, guild_id: int | None) -> int:
+        return PREMIUM_FAVORITES if self.is_premium(guild_id) else FREE_FAVORITES
 
     async def refresh(self):
         """Reload every active server subscription from Discord."""
