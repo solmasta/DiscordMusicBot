@@ -198,3 +198,17 @@ class Referer(unittest.TestCase):
         with mock.patch.object(L, "CCMIXTER_ON", False):
             self.assertEqual([g for g, _ in L.Library(client_id="").genres(L.FREE)], [], "nothing without ccMixter or a key")
             self.assertIn("Metal", [g for g, _ in L.Library(client_id="k").genres(L.FREE)])
+
+
+class NonCommercialFilter(unittest.TestCase):
+    def test_nc_licences_are_skipped(self):
+        import library as L
+        self.assertTrue(L._non_commercial("Attribution-NonCommercial", ""))
+        self.assertTrue(L._non_commercial("", "https://creativecommons.org/licenses/by-nc-sa/3.0/"))
+        self.assertFalse(L._non_commercial("Attribution", "https://creativecommons.org/licenses/by/4.0/"))
+        self.assertFalse(L._non_commercial(None, None))
+        row = {"upload_id": 1, "upload_name": "Song", "license_name": "Attribution Noncommercial",
+               "files": [{"file_nicname": "mp3", "download_url": "https://x/y.mp3"}]}
+        self.assertIsNone(L._ccmixter_song(row, "Rock"))
+        row["license_name"] = "Attribution"
+        self.assertIsNotNone(L._ccmixter_song(row, "Rock"))

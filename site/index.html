@@ -66,7 +66,7 @@ footer a{margin:0 8px}
 
   <header class="hero">
     <h1>Live radio and music,<br>24/7 in your Discord server</h1>
-    <p>Tune your voice channel to a real radio station from any US state, browse free music by genre, or queue your own songs. No setup headaches.</p>
+    <p>Tune your voice channel to a real radio station from any US state, browse free music by genre, or listen to free Creative Commons songs. No setup headaches.</p>
     <div class="cta">
       <a class="btn" data-invite href="#">Add to Discord</a>
       <a class="btn ghost" data-support href="#">Join support server</a>
@@ -79,8 +79,8 @@ footer a{margin:0 8px}
     <p class="sub">Everything runs with slash commands. Nothing to install.</p>
     <div class="grid">
       <div class="card"><h3>📻 Radio from every state</h3><p>Pick a state, city and genre with <code>/stations browse</code> and your channel is listening to a local station in seconds.</p></div>
-      <div class="card"><h3>🎵 Music library</h3><p>Browse songs by genre with <code>/library</code>, or paste a link or search with <code>/play</code>.</p></div>
-      <div class="card"><h3>📋 Full queue controls</h3><p>Skip, shuffle, loop, move and remove tracks. Set volume per server.</p></div>
+      <div class="card"><h3>🎵 Music library</h3><p>Browse free Creative Commons songs by genre with <code>/library</code>, each one credited to its artist.</p></div>
+      <div class="card"><h3>🎛️ Easy controls</h3><p>A control panel with buttons, plus per-server volume. Anyone can start the radio; managers stay in charge.</p></div>
       <div class="card"><h3>🔁 Stays on air</h3><p>Dropped streams restart automatically and your server's station is restored after bot updates.</p></div>
     </div>
   </section>
@@ -89,8 +89,8 @@ footer a{margin:0 8px}
     <h2>Commands</h2>
     <p class="sub">A few to get started</p>
     <div class="cmds">
-      <code>/stations play</code><code>/stations browse</code><code>/stations search</code><code>/library</code><code>/play</code><code>/queue</code>
-      <code>/skip</code><code>/volume</code><code>/loop</code><code>/shuffle</code><code>/help</code>
+      <code>/stations play</code><code>/stations browse</code><code>/stations search</code><code>/stations now</code><code>/stations volume</code>
+      <code>/stations favorites</code><code>/library</code><code>/radio</code><code>/premium</code><code>/theme</code>
     </div>
   </section>
 
@@ -109,6 +109,7 @@ footer a{margin:0 8px}
         <div class="price">$X <small>/ month per server</small></div>
         <ul><li>Everything in Free</li><li><b>True 24/7</b>: set a station once and it plays forever, even with nobody listening, and returns after updates</li><li><b>Your own look</b>: your name, colours, tagline and logo on the radio card and panel</li><li><b>Priority slots</b>: starts even when the bot is busy</li><li>25 saved favorite stations (free: 3)</li><li>Priority support</li></ul>
         <a class="btn" data-support href="#">Get Premium</a>
+        <p style="margin:12px 0 0;font-size:.9rem;color:var(--muted)">Or try it free: vote on top.gg and run <code>/vote</code> for a 12-hour boost.</p>
       </div>
     </div>
   </section>
@@ -138,13 +139,13 @@ footer a{margin:0 8px}
   <section id="faq">
     <h2>FAQ</h2>
     <p class="sub">&nbsp;</p>
-    <details><summary>How do I add it to my server?</summary><p>Click “Add to Discord”, pick your server, and approve the permissions. Then join a voice channel and run <code>/stations browse</code>.</p></details>
+    <details><summary>How do I add it to my server?</summary><p>Click “Add to Discord”, pick your server, and approve the permissions. Then join a voice channel and run <code>/stations play</code>.</p></details>
     <details><summary>What permissions does it need?</summary><p>Connect and Speak in voice, plus Send Messages and Embed Links so it can show what's playing.</p></details>
     <details><summary>Can I cancel Premium any time?</summary><p>Yes. Cancel whenever you like and your server drops back to the free plan.</p></details>
   </section>
 
   <footer>
-    <a data-support href="#">Support</a>
+    <a data-support href="#">Support</a><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a>
     <p>© <span id="yr"></span> Crüe FM. Not affiliated with Discord.</p>
   </footer>
 </div>

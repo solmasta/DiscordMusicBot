@@ -256,6 +256,12 @@ class Library:
         return songs
 
 
+def _non_commercial(*texts) -> bool:
+    """True when a licence forbids commercial use (CC '-NC' and similar). This bot has a paid tier, so those songs are skipped."""
+    low = " ".join(str(t or "") for t in texts).lower()
+    return any(m in low for m in ("noncommercial", "non-commercial", "non commercial", "by-nc", "/nc", "-nc-", "-nc/"))
+
+
 def parse_jamendo(data: dict, genre: str) -> list[Song]:
     """Turn a Jamendo /tracks response into songs, skipping anything without a playable stream."""
     headers = data.get("headers") or {}
@@ -266,6 +272,8 @@ def parse_jamendo(data: dict, genre: str) -> list[Song]:
     for row in data.get("results") or []:
         url = row.get("audio") or ""
         if not url.startswith("https://") or not row.get("name"):
+            continue
+        if _non_commercial(row.get("license_ccurl"), row.get("license")):
             continue
         songs.append(Song(id=str(row.get("id")), title=str(row["name"]).strip(), artist=str(row.get("artist_name") or "Unknown artist").strip(),
                           genre=genre, source=FREE, url=url, duration=int(row.get("duration") or 0),
@@ -310,6 +318,8 @@ def _ccmixter_song(row, genre: str) -> Song | None:
     files = [f for f in (row.get("files") or []) if isinstance(f, dict)]
     mp3 = next((f for f in files if f.get("file_nicname") == "mp3" and str(f.get("download_url", "")).startswith("https://")), None)
     if not mp3 or not row.get("upload_name"):
+        return None
+    if _non_commercial(row.get("license_name"), row.get("license_url")):
         return None
     info = mp3.get("file_format_info")
     licence = (row.get("license_name") or "Creative Commons").strip()

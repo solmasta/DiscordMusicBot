@@ -6,8 +6,9 @@ limits are from memory, so trim if a form complains.
 
 ## Before you submit (all sites)
 
-- Bot is public, online, and answers `/help`.
-- Describe only features you've tested. Don't say "commercial-free" and don't imply it plays Spotify or YouTube music.
+- Bot is public, online, and `/stations play` works in a fresh test server.
+- Describe only features you've tested. Don't claim ad-free or commercial-skipping radio, and don't imply it plays Spotify or YouTube music.
+- Only list commands that work on public servers: `/stations`, `/library`, `/radio`, `/premium`, `/theme`. The `/play`/queue commands are home-server only.
 - Icon: `assets/icon.png` (512x512). Banner: `assets/banner.png`. Add 2-3 screenshots of `/stations browse` and the now-playing card.
 - Invite link: the "Add to Discord" link on the landing page (built from the bot's `CLIENT_ID`).
 
@@ -33,21 +34,19 @@ limits are from memory, so trim if a form complains.
 ```markdown
 # Crüe FM: radio and music for your voice channel
 
-Tune your server to a real radio station from any US state, browse free music by genre, or queue your own songs. Everything runs with slash commands, so there's nothing to install or configure.
+Tune your server to a real radio station from any US state, browse free music by genre, or play free Creative Commons music. Everything runs with slash commands, so there's nothing to install or configure.
 
 ## What you get
 📻 **Radio from every state**: pick your state, city and genre with `/stations browse` (or search by name or call letters with `/stations search`) and your channel is listening in seconds.
 🎵 **Music library**: browse free songs by genre with `/library`.
-▶️ **Play anything**: paste a link or search with `/play`.
-📋 **Full queue control**: skip, pause, loop, shuffle, move and remove tracks. Set the volume for your server.
+⭐ **Favorites**: save stations your server loves and replay them with `/stations favorites`.
+🎛️ **Easy controls**: a button panel for your channel and a volume setting per server.
 🔁 **Stays on air**: dropped streams restart on their own, and your server's station comes back after bot updates.
 
 ## Getting started
 1. Add the bot to your server.
 2. Join a voice channel.
-3. Run `/stations browse` or `/play`.
-
-Run `/help` any time to see every command.
+3. Run `/stations play` (try `/stations play place:Chicago`) or `/stations browse`.
 
 ## Permissions
 Connect and Speak (to play audio), plus Send Messages and Embed Links (to show what's playing).
@@ -81,18 +80,16 @@ Questions or ideas? Join our support server: [Discord invite].
 ```markdown
 # Crüe FM: radio and music for your voice channel
 
-Tune your server to a real radio station from any US state, browse free music by genre, or queue your own songs. Everything is slash commands, so there's nothing to set up.
+Tune your server to a real radio station from any US state, browse free music by genre, or play free Creative Commons music. Everything is slash commands, so there's nothing to set up.
 
 **Features**
 - 📻 **Radio from every state.** Pick your state, city and genre with `/stations browse`, or search by name or call letters with `/stations search`.
 - 🎵 **Music library.** Browse free songs by genre with `/library`.
-- ▶️ **Play anything.** Paste a link or search with `/play`.
-- 📋 **Queue controls.** Skip, pause, loop, shuffle, move and remove tracks, and set the volume for your server.
+- ⭐ **Favorites.** Save stations your server loves and replay them with `/stations favorites`.
+- 🎛️ **Easy controls.** A button panel for your channel and a volume setting per server.
 - 🔁 **Stays on air.** Dropped streams restart on their own, and your server's station comes back after updates.
 
-**Get started:** add the bot, join a voice channel, run `/stations browse` or `/play`. Use `/help` to see every command.
-
-**Permissions:** Connect and Speak (to play audio), Send Messages and Embed Links (to show what's playing).
+**Get started:** add the bot, join a voice channel, run `/stations play`. **Permissions:** Connect and Speak (to play audio), Send Messages and Embed Links (to show what's playing).
 
 **Free and Premium:** free to use. Premium adds [premium features] for [$X/month per server]. Details: [landing page URL]
 
@@ -119,18 +116,18 @@ Tune your server to a real radio station from any US state, browse free music by
 ```markdown
 ## Crüe FM
 
-Live radio and music for your Discord voice channel. Choose a real station from any US state, browse free music by genre, or queue your own songs. All with slash commands.
+Live radio and music for your Discord voice channel. Choose a real station from any US state, browse free music by genre, or play free Creative Commons music. All with slash commands.
 
 ### Commands
 | Command | What it does |
 |---|---|
+| `/stations play` | Type a city or state and play the best working station there |
 | `/stations browse` | Pick your state, city and genre and start a station |
 | `/stations search` | Search by name, call letters, frequency or genre |
 | `/library` | Browse free music by genre |
-| `/play <song or link>` | Play a song or add it to the queue |
-| `/queue` · `/skip` · `/pause` · `/resume` | Control playback |
-| `/loop` · `/shuffle` · `/volume` | Loop, shuffle and set the volume |
-| `/help` | See every command |
+| `/stations now` · `/stations stop` · `/stations volume` | See what's playing, stop it, set the volume |
+| `/stations favorite` · `/stations favorites` | Save and replay your server's favorite stations |
+| `/premium` · `/theme` | Plans and Premium themes |
 
 ### Why Crüe FM
 - Streams restart automatically if they drop

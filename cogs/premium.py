@@ -31,7 +31,8 @@ class PremiumCog(commands.Cog):
             "• True **24/7**: the radio never stops (free servers get a few hours at a time) and stays on with nobody listening\n"
             "• **Your own look**: name, colour, tagline and logo (`/theme`)\n"
             "• **25 saved favorite stations** (free servers get 3)\n"
-            "• **Priority slots**: starts even when the bot is busy",
+            "• **Priority slots**: starts even when the bot is busy\n\n"
+            "Not ready to subscribe? `/vote` gives this server a free 12-hour boost of 24/7 and priority slots.",
             view=view, ephemeral=True,
         )
 

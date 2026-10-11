@@ -52,3 +52,19 @@ class AlwaysOn(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemovedFromServer(unittest.IsolatedAsyncioTestCase):
+    async def test_everything_saved_for_a_server_is_deleted(self):
+        import theme as T
+        radio, bot = make_radio([])
+        radio.store = Store(tempfile.mkdtemp())
+        await radio.store.open()
+        bot.premium = PR.Premium(None, sku_id="111")
+        for gid in (1, 2):
+            await radio.add_favorite(gid, station("A", "a"))
+            await radio.save_theme(T.Theme(gid, "Name", 0xFF0000))
+        await radio.forget_guild(1)
+        radio._favs, radio._themes = await radio.store.all_favorites(), await radio.store.all_themes()
+        self.assertEqual((list(radio._favs), list(radio._themes)), ([2], [2]))
+        await radio.store.close()

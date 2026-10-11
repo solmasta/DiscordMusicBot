@@ -154,7 +154,7 @@ def make_banner(path: str):
 
     tag_font = font(30 * SS // 2 * 1, "FreeSansBold.ttf")
     d = ImageDraw.Draw(base)
-    tagline = "R O C K   R A D I O   ·   W E   S K I P   T H E   C O M M E R C I A L S"
+    tagline = "R O C K   R A D I O   ·   L I V E   2 4 / 7"
     tw = d.textlength(tagline, font=tag_font)
     ty = my + mark.height + 34 * SS
     d.text(((w - tw) / 2, ty), tagline, font=tag_font, fill=(236, 226, 228, 235))

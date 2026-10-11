@@ -46,6 +46,19 @@ CREATE TABLE IF NOT EXISTS guild_theme (
     tagline  TEXT,
     logo     BLOB
 );
+CREATE TABLE IF NOT EXISTS vote_credit (
+    user_id   INTEGER PRIMARY KEY,
+    credits   INTEGER NOT NULL,
+    last_vote REAL    NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vote_seen (
+    vote_id TEXT PRIMARY KEY,
+    at      REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS guild_boost (
+    guild_id INTEGER PRIMARY KEY,
+    until    REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS user_area (
     user_id    INTEGER PRIMARY KEY,
     state      TEXT NOT NULL,
@@ -248,3 +261,46 @@ class Store:
         from theme import Theme
         rows = await asyncio.to_thread(self._run, "SELECT guild_id, name, color, tagline, logo FROM guild_theme", (), True)
         return {g: Theme(g, n, c, t, bytes(l) if l else None) for g, n, c, t, l in rows}
+
+    async def delete_guild_data(self, guild_id: int):
+        """Remove everything saved for a server (it removed the bot): radio, panel, favorites and theme."""
+        def _all():
+            with self._lock:
+                if self._db is None:
+                    return
+                for table in ("guild_radio", "guild_panel", "guild_favorites", "guild_theme", "guild_boost"):
+                    self._db.execute(f"DELETE FROM {table} WHERE guild_id=?", (guild_id,))
+                self._db.commit()
+        await asyncio.to_thread(_all)
+
+    # ---- vote perks
+    async def save_credit(self, user_id: int, credits: int, last_vote: float):
+        await asyncio.to_thread(
+            self._run,
+            "INSERT INTO vote_credit (user_id, credits, last_vote) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET credits=excluded.credits, last_vote=excluded.last_vote",
+            (user_id, credits, last_vote),
+        )
+
+    async def all_credits(self) -> tuple[dict[int, int], dict[int, float]]:
+        rows = await asyncio.to_thread(self._run, "SELECT user_id, credits, last_vote FROM vote_credit", (), True)
+        return {u: c for u, c, _ in rows}, {u: t for u, _, t in rows}
+
+    async def save_vote_seen(self, vote_id: str, at: float):
+        await asyncio.to_thread(self._run, "INSERT OR REPLACE INTO vote_seen (vote_id, at) VALUES (?, ?)", (vote_id, at))
+
+    async def recent_votes(self, since: float) -> dict[str, float]:
+        await asyncio.to_thread(self._run, "DELETE FROM vote_seen WHERE at < ?", (since,))
+        rows = await asyncio.to_thread(self._run, "SELECT vote_id, at FROM vote_seen", (), True)
+        return {v: t for v, t in rows}
+
+    async def save_boost(self, guild_id: int, until: float):
+        await asyncio.to_thread(
+            self._run,
+            "INSERT INTO guild_boost (guild_id, until) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET until=excluded.until",
+            (guild_id, until),
+        )
+
+    async def all_boosts(self) -> dict[int, float]:
+        rows = await asyncio.to_thread(self._run, "SELECT guild_id, until FROM guild_boost", (), True)
+        return {g: u for g, u in rows}
