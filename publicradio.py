@@ -228,6 +228,10 @@ class PublicRadio:
             self._spawn(cog.update_panel(guild_id))
 
     # ---- premium themes
+    def _premium_on(self) -> bool:
+        prem = getattr(self.bot, "premium", None)
+        return bool(prem is not None and prem.enabled is True)
+
     def theme_for(self, guild_id: int | None) -> Theme | None:
         """The server's theme, only while it has premium (the saved theme is kept if premium lapses)."""
         theme = self._themes.get(guild_id)
@@ -310,6 +314,17 @@ class PublicRadio:
             await self.store.delete(guild_id)
         except Exception as e:
             log.warning("Could not delete saved settings for server %s: %s", guild_id, e)
+
+    async def forget_guild(self, guild_id: int):
+        """The bot was removed from a server: delete everything we saved about it."""
+        self._saved.pop(guild_id, None)
+        self._panels.pop(guild_id, None)
+        self._favs.pop(guild_id, None)
+        self._themes.pop(guild_id, None)
+        try:
+            await self.store.delete_guild_data(guild_id)
+        except Exception as e:
+            log.warning("Could not delete the saved data for server %s: %s", guild_id, e)
 
     # ---- permissions
     def may_control(self, member: discord.Member, player: PublicPlayer | None) -> bool:
@@ -668,7 +683,7 @@ class PublicRadio:
                     await self._notify(player, "👋 Everyone left, so I've stopped the radio. Use `/stations browse` to start again.")
                 continue
             player.idle_since = None
-            if FREE_SESSION_S and not self.is_premium(gid):
+            if FREE_SESSION_S and self._premium_on() and not self.is_premium(gid):
                 left = player.session_start + FREE_SESSION_S - now
                 if left <= 0:
                     await self.stop(guild, "free session limit")

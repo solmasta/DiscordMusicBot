@@ -248,3 +248,14 @@ class Store:
         from theme import Theme
         rows = await asyncio.to_thread(self._run, "SELECT guild_id, name, color, tagline, logo FROM guild_theme", (), True)
         return {g: Theme(g, n, c, t, bytes(l) if l else None) for g, n, c, t, l in rows}
+
+    async def delete_guild_data(self, guild_id: int):
+        """Remove everything saved for a server (it removed the bot): radio, panel, favorites and theme."""
+        def _all():
+            with self._lock:
+                if self._db is None:
+                    return
+                for table in ("guild_radio", "guild_panel", "guild_favorites", "guild_theme"):
+                    self._db.execute(f"DELETE FROM {table} WHERE guild_id=?", (guild_id,))
+                self._db.commit()
+        await asyncio.to_thread(_all)

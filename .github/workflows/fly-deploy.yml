@@ -1,13 +1,27 @@
-name: Deploy to Fly.io
+name: Test and deploy to Fly.io
 
 on:
   push:
     branches:
       - main
+  pull_request:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libopus0 libsodium-dev fonts-dejavu-core
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -q
+
   deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

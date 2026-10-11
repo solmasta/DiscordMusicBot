@@ -308,8 +308,7 @@ class MusicBot(commands.Bot):
         self.premium.on_entitlement(entitlement)
 
     async def on_guild_remove(self, guild: discord.Guild):
-        await self.public.forget(guild.id)   # the bot was removed: drop that server's saved settings
-        await self.public.drop_panel(guild.id)
+        await self.public.forget_guild(guild.id)   # the bot was removed: delete everything saved for that server
         self.public.players.pop(guild.id, None)
 
     async def close(self):
@@ -1164,7 +1163,7 @@ class MusicBot(commands.Bot):
         await self.wait_until_ready()
 
     async def on_app_command_error(self, interaction: discord.Interaction, error: Exception):
-        msg = f"Something went wrong: `{error}`"
+        msg = "Something went wrong on my end. Please try again in a moment."
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)

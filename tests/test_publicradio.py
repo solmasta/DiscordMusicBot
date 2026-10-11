@@ -322,6 +322,8 @@ class Upkeep(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.vc.connected)
 
     async def test_free_session_limit_warns_then_stops_but_premium_runs_on(self):
+        import premium as PR
+        self.bot.premium = PR.Premium(None, sku_id="111")           # premium is switched on for this bot
         self.ch.voice_states = {1: object()}                       # someone is listening
         with mock.patch.object(P, "FREE_SESSION_S", 1000), mock.patch.object(P, "SESSION_WARN_S", 600):
             self.player.session_start = time.monotonic() - 500      # 500s left: inside the warning window
@@ -335,6 +337,13 @@ class Upkeep(unittest.IsolatedAsyncioTestCase):
             await self.tick()
             self.assertNotIn(1, self.radio.players)
             self.assertTrue(any("24/7" in t for t in self.sent))
+
+    async def test_no_free_session_limit_until_premium_exists(self):
+        self.ch.voice_states = {1: object()}
+        with mock.patch.object(P, "FREE_SESSION_S", 1000):
+            self.player.session_start = time.monotonic() - 5000
+            await self.tick()
+        self.assertIn(1, self.radio.players)
 
     async def test_premium_is_not_limited_by_the_free_session(self):
         import premium as PR

@@ -1,27 +1,32 @@
-# Discord Music Bot
+# Crüe FM
 
-A Discord bot that plays audio from YouTube, SoundCloud, direct URLs, and more — 24/7.
+A Discord bot that plays live radio from every US state and free music by genre in your voice channel.
+Pick a city, get a station that actually works, and keep it on air. Optional **Premium** (a Discord server
+subscription) adds true 24/7, your own theme (name, colour, tagline, logo), more saved favorites and priority slots.
 
-## Features
+## Commands
+
+**Every server**
 
 | Command | Description |
 |---|---|
-| `/play <query>` | Play a song from a URL or search YouTube |
-| `/skip` | Skip the current song |
-| `/pause` | Pause playback |
-| `/resume` | Resume playback |
-| `/stop` | Stop and clear the queue |
-| `/queue` | Show the current queue |
-| `/nowplaying` | Show what's currently playing |
-| `/volume <1–100>` | Adjust playback volume |
-| `/loop` | Toggle looping the current track |
-| `/loopqueue` | Toggle looping the entire queue |
-| `/shuffle` | Shuffle the queue |
-| `/remove <position>` | Remove a song from the queue |
-| `/move <from> <to>` | Reorder a song in the queue |
-| `/clearqueue` | Clear the queue without stopping playback |
-| `/join` | Pull the bot into your voice channel |
-| `/leave` | Disconnect the bot |
+| `/stations play [place] [genre]` | Type a city or state; plays the best working station there (uses your remembered area if empty) |
+| `/stations browse` | Guided menus: state, city, genre, station |
+| `/stations search <text>` | Search by name, call letters, frequency or genre |
+| `/stations now` / `stop` / `volume` | See what's playing, stop, set the server volume |
+| `/stations panel` | Post a permanent control panel (managers) |
+| `/stations favorite` / `favorites` / `unfavorite` | Save the playing station, play a saved one, remove one (3 saved free, 25 Premium) |
+| `/stations forget` | Forget the area the bot remembered for you |
+| `/library` | Browse free (Creative Commons) songs by genre |
+| `/radio` | Show what's playing |
+| `/premium` | See the server's plan and subscribe |
+| `/theme set` / `logo` / `preview` / `reset` | Premium: your server's name, colour, tagline and logo (managers) |
+
+**Home server only** (`GUILD_ID`): the original radio rotation and music commands (`/play`, `/queue`, `/skip`,
+`/volume`, `/loop`, `/shuffle`, `/help` and friends) are registered only on that server.
+
+Free servers can run the radio for `FREE_SESSION_HOURS` (default 4) per session once Premium is enabled;
+Premium servers run 24/7.
 
 ## Requirements
 
@@ -36,14 +41,14 @@ A Discord bot that plays audio from YouTube, SoundCloud, direct URLs, and more �
 1. Go to https://discord.com/developers/applications
 2. Click **New Application**, give it a name.
 3. Go to **Bot** → **Add Bot**.
-4. Under **Privileged Gateway Intents**, enable **Message Content Intent** and **Server Members Intent**.
+4. No privileged intents are needed (leave them off).
 5. Copy the **Token** — you'll need it shortly.
 
 ### 2. Invite the Bot to Your Server
 
 Generate an invite URL from **OAuth2 → URL Generator**:
 - Scopes: `bot`, `applications.commands`
-- Bot permissions: `Connect`, `Speak`, `Send Messages`, `Embed Links`, `Read Message History`
+- Bot permissions: `Connect`, `Speak`, `Send Messages`, `Embed Links`
 
 ### 3. Install Dependencies
 
@@ -64,7 +69,7 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 # Edit .env and set DISCORD_TOKEN=your_token_here
-# Optionally set GUILD_ID=your_server_id for instant slash command registration
+# GUILD_ID = your home server (gets the music commands). PREMIUM_SKU_ID turns Premium on.
 ```
 
 ### 5. Run
@@ -139,3 +144,19 @@ Browse songs by genre and play them. Two sources:
 
 Songs play on the home radio (the rotation pauses until they finish or someone taps **Back to rotation**), or
 through the public player on other servers (the list repeats until stopped; **Skip song** moves on).
+
+
+## Premium (Discord server subscriptions)
+
+Off until you set `PREMIUM_SKU_ID` (Developer Portal > Monetization > create a server subscription).
+Then `fly secrets set PREMIUM_SKU_ID=<id> -a discordmusicbot-k-zztq`. Settings: `PREMIUM_RESERVED_STREAMS`,
+`FREE_SESSION_HOURS`, `FREE_FAVORITES`, `PREMIUM_FAVORITES` (see `.env.example`).
+
+## Tests and deploys
+
+`python -m unittest discover` runs the tests. Pull requests and pushes to `main` run them in GitHub Actions;
+a push to `main` deploys to Fly.io only if they pass.
+
+## Before you charge for it
+
+Read `docs/launch-checklist.md`: licensing, privacy, capacity and what is still untested.
