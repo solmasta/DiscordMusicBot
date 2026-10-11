@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 import directory as dirmod
 import library as songlib
 import premium as premium_mod
+import votes as votes_mod
+import webhook
 import visuals
 from picker import HomeRadioView, clean
 from publicradio import FFMPEG_BEFORE, FFMPEG_OPTIONS, START_WAIT_S, PublicRadio, _Probe, check_stream_url, opus_settings
@@ -170,6 +172,8 @@ class MusicBot(commands.Bot):
         self.directory = dirmod.Directory()   # searchable US station list for /stations
         self.library = songlib.Library()      # songs by genre: free-licensed everywhere, popular hits at home
         self.premium = premium_mod.Premium(self)   # Discord server subscriptions
+        self.votes = votes_mod.VoteBoosts(self)    # top.gg vote boosts
+        self._web = None
         self.public = PublicRadio(self)       # radio players for servers other than the home server
         self._branding_done = False
         self._tap: visuals.SpectrumTap | None = None
@@ -209,10 +213,13 @@ class MusicBot(commands.Bot):
         self._http = aiohttp.ClientSession()
         self.directory.session = self._http
         await self.public.start()
+        await self.votes.load()
+        self._web = await webhook.start(self.votes)
         await self.load_extension("cogs.music")
         await self.load_extension("cogs.stations")
         await self.load_extension("cogs.library")
         await self.load_extension("cogs.premium")
+        await self.load_extension("cogs.vote")
         self.add_view(HomeRadioView(self))      # the controls under the radio card survive restarts
 
         @self.tree.command(name="radio", description="Show the station and song playing now")
@@ -312,6 +319,8 @@ class MusicBot(commands.Bot):
         self.public.players.pop(guild.id, None)
 
     async def close(self):
+        if self._web:
+            await self._web.cleanup()
         await self.public.shutdown()
         await self.public.store.close()
         if self._rock_task:

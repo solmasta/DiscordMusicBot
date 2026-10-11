@@ -20,6 +20,7 @@ subscription) adds true 24/7, your own theme (name, colour, tagline, logo), more
 | `/library` | Browse free (Creative Commons) songs by genre |
 | `/radio` | Show what's playing |
 | `/premium` | See the server's plan and subscribe |
+| `/vote` | Vote on top.gg, then give your server a free 12-hour boost (24/7 + priority slots) |
 | `/theme set` / `logo` / `preview` / `reset` | Premium: your server's name, colour, tagline and logo (managers) |
 
 **Home server only** (`GUILD_ID`): the original radio rotation and music commands (`/play`, `/queue`, `/skip`,
@@ -151,6 +152,14 @@ through the public player on other servers (the list repeats until stopped; **Sk
 Off until you set `PREMIUM_SKU_ID` (Developer Portal > Monetization > create a server subscription).
 Then `fly secrets set PREMIUM_SKU_ID=<id> -a discordmusicbot-k-zztq`. Settings: `PREMIUM_RESERVED_STREAMS`,
 `FREE_SESSION_HOURS`, `FREE_FAVORITES`, `PREMIUM_FAVORITES` (see `.env.example`).
+
+## Vote perks (top.gg)
+
+Each top.gg vote earns one credit; `/vote` spends it on a server for 12 hours of true 24/7 and priority slots
+(stacks up to 48 hours ahead; themes and favorites stay Premium-only). Setup: in top.gg > your bot > Webhooks, set
+the URL to `https://discordmusicbot-k-zztq.fly.dev/topgg` and run
+`fly secrets set TOPGG_WEBHOOK_SECRET=<the secret top.gg gives you> -a discordmusicbot-k-zztq`.
+The bot serves `/healthz` and `/topgg` on port 8080; `/topgg` refuses everything until the secret is set.
 
 ## Tests and deploys
 

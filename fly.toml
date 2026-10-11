@@ -11,9 +11,14 @@ RADIO_CHANNEL_ID = "985413944514600970"
 # Secrets (set once via CLI, never committed):
 #   fly secrets set DISCORD_TOKEN=your_token_here
 
-# Discord bots are workers — no inbound HTTP needed.
-# Removing [http_service] prevents Fly.io from auto-stopping the machine
-# when there is no HTTP traffic (the bot stays connected via WebSocket).
+# The bot is a worker, but it also runs a tiny web server (/healthz and the top.gg vote webhook at /topgg).
+# auto_stop_machines is OFF so Fly never stops the bot for lack of web traffic.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
 
 [[restart]]
   policy = "always"

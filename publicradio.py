@@ -145,6 +145,11 @@ class PublicPlayer:
         return bool(self.tracks)
 
 
+def _reserve() -> int:
+    import premium
+    return premium.PREMIUM_RESERVE
+
+
 class PublicRadio:
     def __init__(self, bot, store: Store | None = None):
         self.bot = bot
@@ -164,7 +169,10 @@ class PublicRadio:
         """How many servers may be playing when this one asks: premium servers get a few reserved extras."""
         prem = getattr(self.bot, "premium", None)
         extra = prem.extra_slots(guild_id) if prem is not None else 0
-        return MAX_STREAMS + (extra if isinstance(extra, int) else 0)
+        extra = extra if isinstance(extra, int) else 0
+        if not extra and self.has_perks(guild_id):
+            extra = _reserve()
+        return MAX_STREAMS + extra
 
     # ---- saved settings
     async def start(self):
@@ -256,6 +264,11 @@ class PublicRadio:
         prem = getattr(self.bot, "premium", None)
         return bool(prem is not None and prem.is_premium(guild_id) is True)
 
+    def has_perks(self, guild_id: int | None) -> bool:
+        """Premium, or a vote boost that hasn't run out: true 24/7 and priority slots."""
+        votes = getattr(self.bot, "votes", None)
+        return self.is_premium(guild_id) or bool(votes is not None and votes.is_boosted(guild_id) is True)
+
     def favorites_for(self, guild_id: int) -> list:
         return list(self._favs.get(guild_id, {}).values())
 
@@ -321,6 +334,9 @@ class PublicRadio:
         self._panels.pop(guild_id, None)
         self._favs.pop(guild_id, None)
         self._themes.pop(guild_id, None)
+        boosts = getattr(getattr(self.bot, "votes", None), "boosts", None)
+        if isinstance(boosts, dict):
+            boosts.pop(guild_id, None)
         try:
             await self.store.delete_guild_data(guild_id)
         except Exception as e:
@@ -610,7 +626,7 @@ class PublicRadio:
         if len(self.players) >= self.slot_limit(guild.id):
             log.info("Not resuming %s yet: at the %d-server limit", guild.name, self.slot_limit(guild.id))
             return False
-        if not listener_ids(channel, guild.me.id) and not self.is_premium(gid):
+        if not listener_ids(channel, guild.me.id) and not self.has_perks(gid):
             return False                      # nobody there; resume when someone joins (premium resumes anyway)
         perms = channel.permissions_for(guild.me)
         if not (perms.connect and perms.speak):
@@ -675,7 +691,7 @@ class PublicRadio:
             player.lost_since = None
             humans = listener_ids(vc.channel, guild.me.id)
             if not humans:
-                if self.is_premium(gid):
+                if self.has_perks(gid):
                     continue                    # premium servers get true 24/7: stay on air with nobody listening
                 player.idle_since = player.idle_since or now
                 if now - player.idle_since >= IDLE_LEAVE_S:
@@ -683,7 +699,7 @@ class PublicRadio:
                     await self._notify(player, "👋 Everyone left, so I've stopped the radio. Use `/stations browse` to start again.")
                 continue
             player.idle_since = None
-            if FREE_SESSION_S and self._premium_on() and not self.is_premium(gid):
+            if FREE_SESSION_S and self._premium_on() and not self.has_perks(gid):
                 left = player.session_start + FREE_SESSION_S - now
                 if left <= 0:
                     await self.stop(guild, "free session limit")

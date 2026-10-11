@@ -26,6 +26,10 @@ What is done, and what still needs a person. Update it as you go.
 - [ ] **Monitoring.** One machine and one volume: add an uptime alert and a volume snapshot schedule.
 - [ ] **Verification.** Discord requires bot verification at 100 servers; it asks for a privacy policy and terms.
 
+- [ ] **Vote webhook.** Set `TOPGG_WEBHOOK_SECRET` and the webhook URL on top.gg, send a test delivery from the
+      top.gg dashboard, vote once yourself and run `/vote`. After the deploy that adds the web server, check
+      `fly status` and `https://<app>.fly.dev/healthz` (the app now has an `[http_service]`, with auto-stop off).
+
 ## Soft launch order
 1. Your own support server and a few friends' servers.
 2. Fix what they find; watch CPU and the "busy" message.
