@@ -1,0 +1,29 @@
+app = "discord-poll-bot"
+primary_region = "ord"
+
+[build]
+
+[env]
+GUILD_ID = "985413944514600968"
+POLL_CHANNEL_ID = "984970543604314142"
+PORT = "8080"
+DB_PATH = "/app/data/votes.db"
+
+# Secrets (set once via CLI):
+#   fly secrets set DISCORD_TOKEN=your_token_here  --app discord-poll-bot
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+
+[mounts]
+  source = "poll_data"
+  destination = "/app/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
