@@ -193,6 +193,13 @@ class PollBot(commands.Bot):
         alliance, horde = get_counts()
         msg = await channel.send(embed=build_embed(alliance, horde), view=PollView())
         save_poll_meta(msg.id, channel.id)
+        try:
+            await msg.pin()
+            log.info("Poll pinned (msg=%s)", msg.id)
+        except discord.Forbidden:
+            log.warning("Missing Manage Messages permission — poll not pinned")
+        except Exception as e:
+            log.warning("Could not pin poll: %s", e)
         log.info("Poll posted (msg=%s)", msg.id)
 
     async def on_app_command_error(self, interaction: discord.Interaction, error: Exception):
