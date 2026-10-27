@@ -5,7 +5,7 @@ primary_region = "ord"
 
 [env]
 GUILD_ID = "985413944514600968"
-POLL_CHANNEL_ID = ""
+POLL_CHANNEL_ID = "984970543604314142"
 PORT = "8080"
 DB_PATH = "/app/data/votes.db"
 
