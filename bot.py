@@ -28,6 +28,7 @@ FFMPEG_OPTIONS = {
 class RadioBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
+        intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents)
 
     async def on_ready(self):
@@ -35,33 +36,26 @@ class RadioBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.listening,
-                name="Q101 🎸",
+                name="Q101 🎶",
             )
         )
-        self.watchdog.start()
+        if not self.watchdog.is_running():
+            self.watchdog.start()
 
     @tasks.loop(seconds=30)
     async def watchdog(self):
         try:
             channel = self.get_channel(VOICE_CHANNEL_ID) or await self.fetch_channel(VOICE_CHANNEL_ID)
-        except Exception as e:
-            log.error("Cannot find voice channel %s: %s", VOICE_CHANNEL_ID, e)
-            return
-
-        vc = discord.utils.get(self.voice_clients, guild=channel.guild)
-
-        if vc is None:
-            try:
+            vc = discord.utils.get(self.voice_clients, guild=channel.guild)
+            if vc is None:
                 vc = await channel.connect()
-                log.info("Joined %s", channel.name)
-            except Exception as e:
-                log.error("Failed to join voice: %s", e)
-                return
-
-        if not vc.is_playing() and not vc.is_paused():
-            source = discord.FFmpegPCMAudio(STREAM_URL, **FFMPEG_OPTIONS)
-            vc.play(source, after=lambda e: log.warning("Stream ended: %s", e) if e else None)
-            log.info("Streaming Q101")
+                log.info("Joined voice channel: %s", channel.name)
+            if not vc.is_playing() and not vc.is_paused():
+                source = discord.FFmpegPCMAudio(STREAM_URL, **FFMPEG_OPTIONS)
+                vc.play(source, after=lambda e: log.warning("Stream ended: %s", e) if e else None)
+                log.info("Streaming Q101")
+        except Exception as e:
+            log.error("Watchdog error: %s", e)
 
     @watchdog.before_loop
     async def before_watchdog(self):
