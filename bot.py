@@ -36,7 +36,7 @@ class RadioBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.listening,
-                name="Q101 🎶",
+                name="CRUE FM 🤘",
             )
         )
         if not self.watchdog.is_running():
@@ -53,7 +53,7 @@ class RadioBot(commands.Bot):
             if not vc.is_playing() and not vc.is_paused():
                 source = discord.FFmpegPCMAudio(STREAM_URL, **FFMPEG_OPTIONS)
                 vc.play(source, after=lambda e: log.warning("Stream ended: %s", e) if e else None)
-                log.info("Streaming Q101")
+                log.info("Streaming CRUE FM")
         except Exception as e:
             log.error("Watchdog error: %s", e)
 
