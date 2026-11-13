@@ -1,11 +1,19 @@
 # Crüe FM: Q101 24/7
 
-A tiny Discord bot that sits in one voice channel and plays one station, Q101, around the clock.
-If the stream drops or the bot gets disconnected, it rejoins and restarts within 30 seconds.
+A Discord bot that sits in one voice channel 24/7 and plays free Chicago radio. Use `/radio` to get a drop-down and
+pick a station; the choice applies to everyone in the channel. If a stream drops or the bot is disconnected, it rejoins
+and restarts within 30 seconds.
 
-- `/nowplaying` shows the station.
-- Station name and stream live at the top of `bot.py`. The stream defaults to the one in the code; set
-  `STATION_URL` to use a different one.
+| Station | Genre |
+|---|---|
+| Q101 (WKQX), 97.1 The Drive, 97.9 The Loop, Rock 95.5, 93.1 WXRT | Rock |
+| 107.5 WGCI, V103, WSRB 106.3 | Hip hop / R&B |
+
+- `/radio` posts the drop-down (you must be in the radio's voice channel to change the station).
+- `/nowplaying` shows the current station.
+- Stations live in the `STATIONS` list at the top of `bot.py`; these are the stations' own free public streams, and a
+  station can change or retire its stream, so if one goes quiet, update its `url` there.
+- `DEFAULT_STATION` (optional, a key like `wgci`) sets what plays at startup. Default is Q101.
 
 ## Setup
 
