@@ -1,65 +1,49 @@
+import asyncio
 import os
+import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-os.environ.setdefault("VOICE_CHANNEL_ID", "123")
+os.environ["RADIO_CHANNEL_ID"] = "123"
 
 import bot
 
 
-class Stations(unittest.TestCase):
-    def test_list_is_sane(self):
-        self.assertIn("q101", bot.STATIONS)
-        self.assertLessEqual(len(bot.STATIONS), 25, "Discord allows 25 options in a drop-down")
-        urls = [st["url"] for st in bot.STATIONS.values()]
-        self.assertEqual(len(urls), len(set(urls)))
-        for key, st in bot.STATIONS.items():
-            self.assertTrue(st["url"].startswith("https://"), key)
-            self.assertLessEqual(len(f"{st['name']} · {st['genre']}"), 100)
-            self.assertLessEqual(len(st["detail"]), 100)
-        genres = {st["genre"] for st in bot.STATIONS.values()}
-        self.assertEqual(genres, {"Rock", "Hip hop / R&B"})
+class Card(unittest.TestCase):
+    def test_pretty_fixes_shouting(self):
+        self.assertEqual(bot._pretty("FOO FIGHTERS"), "Foo Fighters")
+        self.assertEqual(bot._pretty("Foo Fighters"), "Foo Fighters")
+        self.assertEqual(bot._pretty("ACDC"), "ACDC")
 
-    def test_commands(self):
-        radio = bot.RadioBot()
-        bot.setup_commands(radio)
-        self.assertEqual(sorted(c.name for c in radio.tree.get_commands()), ["nowplaying", "radio"])
+    def test_song_text_and_progress(self):
+        b = bot.RadioBot()
+        self.assertEqual(b._song_text(), "")
+        self.assertIsNone(b._progress())
+        b._now = ("Queen", "Under Pressure")
+        self.assertEqual(b._song_text(), "Queen – Under Pressure")
+        b._song_span = (time.time() - 50, time.time() + 50)
+        self.assertAlmostEqual(b._progress(), 0.5, delta=0.05)
+
+    def test_volume_is_muted_while_someone_decides(self):
+        b = bot.RadioBot()
+        self.assertEqual(b._effective_volume(), b.radio_volume)
+        b._pending[1] = MagicMock()
+        self.assertEqual(b._effective_volume(), 0.0)
+
+    def test_station_is_q101_with_one_stream(self):
+        self.assertEqual(bot.STATION_NAME, "Q101")
+        self.assertTrue(bot.RADIO_URL.startswith("https://"))
+        self.assertFalse(hasattr(bot, "STATIONS"), "no rotation")
 
 
-class Dropdown(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.radio = bot.RadioBot()
-        self.vc = MagicMock()
-        self.vc.channel = MagicMock()
-        self.vc.is_playing.return_value = False
-        self.vc.is_paused.return_value = False
-        self.radio.voice_client = lambda: self.vc
-        self.radio.update_presence = AsyncMock()
-        self.radio._start_stream = MagicMock()
-        self.select = bot.StationSelect(self.radio)
-
-    def interaction(self, in_channel=True):
-        i = MagicMock()
-        i.response.send_message = AsyncMock()
-        i.user.voice.channel = self.vc.channel if in_channel else MagicMock()
-        return i
-
-    async def test_option_per_station(self):
-        self.assertEqual([o.value for o in self.select.options], list(bot.STATIONS))
-
-    async def test_listener_switches_station(self):
-        self.select._values = ["wgci"]
-        await self.select.callback(self.interaction())
-        self.assertEqual(self.radio.current, "wgci")
-        self.radio._start_stream.assert_called_once()
-
-    async def test_outsider_cannot_switch(self):
-        self.select._values = ["wgci"]
-        i = self.interaction(in_channel=False)
-        await self.select.callback(i)
-        self.assertEqual(self.radio.current, bot.DEFAULT_STATION)
-        self.assertTrue(i.response.send_message.call_args.kwargs.get("ephemeral"))
-        self.radio._start_stream.assert_not_called()
+class Setup(unittest.IsolatedAsyncioTestCase):
+    async def test_commands_load(self):
+        b = bot.RadioBot()
+        await b.load_extension("cogs.music")
+        names = {c.name for c in b.get_cog("Music").get_app_commands()}
+        self.assertTrue({"play", "skip", "queue"} <= names)
+        self.assertNotIn("stations", names)
+        await b.close()
 
 
 if __name__ == "__main__":
