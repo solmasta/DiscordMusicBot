@@ -13,6 +13,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsodium-dev
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsodium-dev ffmpeg fonts-dejavu-core
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -q
