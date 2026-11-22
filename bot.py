@@ -64,11 +64,11 @@ class CrueFM(commands.Bot):
             vc = discord.utils.get(self.voice_clients, guild=ch.guild)
 
             if vc is None:
-                vc = await ch.connect(self_deaf=True)
+                vc = await ch.connect()
                 log.info("Joined %s", ch.name)
 
             if not vc.is_playing() and not vc.is_paused():
-                self._play(vc)
+                await self._play(vc)
         except Exception:
             log.exception("guard error")
 
@@ -77,11 +77,10 @@ class CrueFM(commands.Bot):
         await self.wait_until_ready()
 
     # ── playback ────────────────────────────────────────────────
-    def _play(self, vc: discord.VoiceClient):
+    async def _play(self, vc: discord.VoiceClient):
         name, url = STATIONS[self.station]
         log.info("Playing %s  %s", name, url)
-        src = discord.FFmpegPCMAudio(url, **FF_OPTS)
-        src = discord.PCMVolumeTransformer(src, volume=1.0)
+        src = await discord.FFmpegOpusAudio.from_probe(url, **FF_OPTS)
         vc.play(src, after=lambda e: log.error("after: %s", e) if e else None)
 
 
@@ -102,7 +101,7 @@ def register(bot: CrueFM):
         bot.station = name.value
         if vc.is_playing() or vc.is_paused():
             vc.stop()
-        bot._play(vc)
+        await bot._play(vc)
         await bot._set_presence()
         label, _ = STATIONS[name.value]
         await interaction.response.send_message(f"Now playing **{label}**")
