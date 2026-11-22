@@ -147,6 +147,9 @@ async def health():
 
 async def main():
     await health()
+    if os.getenv("PAUSED"):
+        log.info("PAUSED is set; not connecting to Discord")
+        await asyncio.Event().wait()
     bot = CrueFM()
     register(bot)
     async with bot:

@@ -1,0 +1,25 @@
+app = "discordmusicbot-k-zztq"
+primary_region = "ord"
+
+[build]
+
+[env]
+VOICE_CHANNEL_ID = "1572640248691822632"
+
+# Secret (set once, never committed):
+#   fly secrets set DISCORD_TOKEN=your_token_here
+
+# Worker bot with a tiny health server; never auto-stop it for lack of web traffic.
+[http_service]
+  internal_port = 8080
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+[[restart]]
+  policy = "always"
+  max_retries = 10
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
