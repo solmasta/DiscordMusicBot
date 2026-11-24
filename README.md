@@ -8,6 +8,9 @@ disconnected, it rejoins and restarts within seconds. One station, no rotation.
 - **Join prompt:** when someone joins the radio channel, the radio is muted for a moment while they choose
   **Approve** or **Dismiss**, so it never blasts them. It comes back by itself after 30 seconds.
 - `/radio` shows what's playing.
+- **Custom streams:** `/stream play <url>` plays any http(s) radio URL (Icecast/Shoutcast, `.m3u`/`.pls`, HLS) or a preset in
+  your voice channel, with auto-reconnect. `/stream nowplaying` shows the station and current song, `/stream volume`,
+  `/stream stations`, and `/stream stop` returns to the default station. `/station` also cancels a custom stream.
 - **Music commands** (home server only, set with `GUILD_ID`): `/play`, `/skip`, `/pause`, `/resume`, `/stop`, `/queue`,
   `/nowplaying`, `/volume`, `/loop`, `/loopqueue`, `/shuffle`, `/remove`, `/move`, `/clearqueue`, `/join`, `/leave`, `/help`.
   Note: `/play` uses yt-dlp for YouTube and similar sites, so check those sites' terms before using it.

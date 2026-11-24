@@ -33,6 +33,9 @@ class CrueFM(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.station = STATION
 
+    async def setup_hook(self):
+        await self.load_extension("cogs.radio")
+
     async def on_ready(self):
         log.info("Ready: %s | discord.py %s", self.user, discord.__version__)
         await self._sync_commands()
@@ -122,6 +125,9 @@ def register(bot: CrueFM):
             return
         await interaction.response.defer()
         bot.station = name.value
+        radio = bot.get_cog("Radio")
+        if radio:
+            radio.clear(interaction.guild.id)  # drop any custom /stream first
         if vc.is_playing() or vc.is_paused():
             vc.stop()
         await bot._play(vc)
