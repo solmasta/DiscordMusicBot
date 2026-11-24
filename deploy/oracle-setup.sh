@@ -38,6 +38,8 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=/etc/crue-fm.env
+Environment=STATE_FILE=/var/lib/crue-fm/home.json
+StateDirectory=crue-fm
 WorkingDirectory=$DIR
 ExecStart=$DIR/venv/bin/python -u bot.py
 Restart=always
