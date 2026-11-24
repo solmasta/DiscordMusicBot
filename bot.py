@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 import logging
 import discord
@@ -17,19 +18,63 @@ TOKEN            = os.environ["DISCORD_TOKEN"]
 
 STATION = DEFAULT_STATION
 
+# Where each server's voice channel is remembered so the bot rejoins after a restart.
+# Point this at a persistent disk (a Docker/Fly volume); if it can't be written the bot still runs,
+# it just forgets the channel on restart.
+STATE_FILE = os.getenv("STATE_FILE", "home.json")
+
 FF_OPTS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
 }
 
 
+class Home(dict):
+    """guild id -> voice channel id, saved to a JSON file on every change."""
+
+    def __init__(self, path: str):
+        super().__init__()
+        self.path = path
+        try:
+            with open(path) as f:
+                self.update({int(g): int(c) for g, c in json.load(f).items()})
+            log.info("Loaded %d saved channel(s) from %s", len(self), path)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            log.exception("Could not read %s; starting with no saved channels", path)
+
+    def _save(self):
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({str(g): c for g, c in self.items()}, f)
+            os.replace(tmp, self.path)
+        except OSError:
+            log.exception("Could not save %s; the channel won't survive a restart", self.path)
+
+    def __setitem__(self, guild_id, channel_id):
+        changed = self.get(guild_id) != channel_id
+        super().__setitem__(guild_id, channel_id)
+        if changed:
+            self._save()
+
+    def pop(self, guild_id, *default):
+        had = guild_id in self
+        value = super().pop(guild_id, *default)
+        if had:
+            self._save()
+        return value
+
+
 class CrueFM(commands.Bot):
-    def __init__(self):
+    def __init__(self, state_file: str | None = None):
         intents = discord.Intents.default()
         intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents)
         self.station = STATION
-        self.home: dict[int, int] = {}  # guild id -> voice channel the radio stays in
+        self.home = Home(state_file or STATE_FILE)  # guild id -> channel the radio stays in
 
     async def setup_hook(self):
         try:

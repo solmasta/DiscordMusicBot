@@ -6,6 +6,15 @@ primary_region = "ord"
 # Secret (set once, never committed):
 #   fly secrets set DISCORD_TOKEN=your_token_here
 
+# To make the bot rejoin its voice channel after a restart or deploy:
+#   fly volumes create radio_data --size 1 --region ord -a discordmusicbot-k-zztq
+# then uncomment the next lines and `fly deploy`. (Do not uncomment before creating the volume.)
+# [env]
+# STATE_FILE = "/data/home.json"
+# [mounts]
+# source = "radio_data"
+# destination = "/data"
+
 # Worker bot with a tiny health server; never auto-stop it for lack of web traffic.
 [http_service]
   internal_port = 8080

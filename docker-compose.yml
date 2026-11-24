@@ -3,3 +3,8 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    volumes:
+      - radio-data:/data   # remembers the voice channel across restarts
+
+volumes:
+  radio-data:

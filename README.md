@@ -36,6 +36,7 @@ The bot reads environment variables (it does not read `.env` itself; Docker Comp
 |---|---|---|
 | `DISCORD_TOKEN` | yes | Bot token. |
 | `PORT` | no | Health-check port (default `8080`). |
+| `STATE_FILE` | no | Where the bot remembers its voice channel (default `home.json`; the Docker image uses `/data/home.json`). |
 | `PAUSED` | no | If set, only the health server runs and the bot stays off Discord. Use it to stand a copy down. |
 
 ## Run it
@@ -56,7 +57,9 @@ export DISCORD_TOKEN=...
 python bot.py
 ```
 
-The bot remembers its channel only while it is running. After a restart or redeploy it waits idle until someone runs `/join` again.
+The bot saves each server's channel to `STATE_FILE` and rejoins it automatically after a restart or redeploy. This needs a
+persistent disk: Docker Compose and the Oracle setup script already provide one; on Fly, create a volume (steps are in
+`fly.toml`). Without one the bot still works, but waits idle after a restart until someone runs `/join` again.
 
 ## Hosting 24/7
 

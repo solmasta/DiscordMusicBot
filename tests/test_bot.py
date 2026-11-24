@@ -1,5 +1,5 @@
-import asyncio
 import os
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -33,12 +33,45 @@ class Stations(unittest.TestCase):
             self.assertEqual(PRESETS[label], url)
 
 
+class HomePersistence(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "sub", "home.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_channels_survive_a_restart(self):
+        h = bot.Home(self.path)
+        h[1] = 10
+        h[2] = 20
+        h.pop(2)
+        self.assertEqual(dict(bot.Home(self.path)), {1: 10})
+
+    def test_missing_or_corrupt_file_starts_empty(self):
+        self.assertEqual(dict(bot.Home(self.path)), {})
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, "w") as f:
+            f.write("{not json")
+        self.assertEqual(dict(bot.Home(self.path)), {})
+
+    def test_unwritable_path_does_not_crash(self):
+        blocker = os.path.join(self.tmp.name, "file")
+        open(blocker, "w").close()
+        h = bot.Home(os.path.join(blocker, "home.json"))  # parent is a file
+        h[1] = 5  # must not raise
+        self.assertEqual(h[1], 5)
+
+
 class Behaviour(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.bot = bot.CrueFM()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = os.path.join(self.tmp.name, "home.json")
+        self.bot = bot.CrueFM(state_file=self.state)
 
     async def asyncTearDown(self):
         await self.bot.close()
+        self.tmp.cleanup()
 
     async def test_commands_are_registered(self):
         bot.register(self.bot)
@@ -109,6 +142,22 @@ class Behaviour(unittest.IsolatedAsyncioTestCase):
         self.bot.home[1] = 5
         await self._run_guard(vc, MagicMock(guild=MagicMock()))
         self.assertEqual(self.bot.home[1], 9)
+
+    async def test_bot_rejoins_saved_channel_after_restart(self):
+        bot.Home(self.state)[1] = 5  # saved by a previous run
+        restarted = bot.CrueFM(state_file=self.state)
+        self.assertEqual(restarted.home[1], 5)
+        vc = MagicMock(is_playing=lambda: False, is_paused=lambda: False)
+        channel = MagicMock(guild=MagicMock(), connect=AsyncMock(return_value=vc))
+        restarted._play = AsyncMock()
+        restarted._diagnose = AsyncMock()
+        with patch.object(restarted, "get_channel", return_value=channel), \
+             patch.object(discord.utils, "get", return_value=None), \
+             patch.object(type(restarted), "voice_clients", new_callable=PropertyMock, return_value=[]):
+            await restarted.guard.coro(restarted)
+        channel.connect.assert_awaited_once()
+        restarted._play.assert_awaited_once_with(vc)
+        await restarted.close()
 
     async def test_guard_forgets_a_deleted_channel(self):
         self.bot.home[1] = 5
