@@ -23,6 +23,18 @@ A Discord bot that plays audio from YouTube, SoundCloud, direct URLs, and more â
 | `/join` | Pull the bot into your voice channel |
 | `/leave` | Disconnect the bot |
 
+### Internet radio
+
+| Command | Description |
+|---|---|
+| `/radio play <url>` | Stream any http(s) radio URL (Icecast/Shoutcast mp3/aac/ogg, `.m3u`/`.pls` playlists, HLS) or pick a preset |
+| `/radio nowplaying` | Station name and current song (ICY metadata) |
+| `/radio volume <1â€“100>` | Adjust volume |
+| `/radio stations` | List presets (edit `PRESETS` in `cogs/radio.py`) |
+| `/radio stop` | Stop and leave |
+
+Streams auto-reconnect (up to 5 tries with backoff) if they drop. Starting radio clears the music queue.
+
 ## Requirements
 
 - Python 3.10+
