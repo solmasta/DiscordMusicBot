@@ -5,6 +5,8 @@ import discord
 from discord.ext import commands, tasks
 from aiohttp import web
 
+from cogs.stations import DEFAULT_STATION, STATIONS
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -14,11 +16,7 @@ log = logging.getLogger(__name__)
 TOKEN            = os.environ["DISCORD_TOKEN"]
 VOICE_CHANNEL_ID = int(os.environ["VOICE_CHANNEL_ID"])
 
-STATIONS = {
-    "crue": ("CRUE FM 🤘",  "https://ice3.somafm.com/metal-128-mp3"),
-    "q101": ("Q101 🎵",     "https://ice3.somafm.com/u80s-128-mp3"),
-}
-STATION = "crue"
+STATION = DEFAULT_STATION
 
 FF_OPTS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -34,7 +32,11 @@ class CrueFM(commands.Bot):
         self.station = STATION
 
     async def setup_hook(self):
-        await self.load_extension("cogs.radio")
+        try:
+            await self.load_extension("cogs.radio")
+        except Exception:
+            # The default station must keep playing even if the /stream add-on can't load.
+            log.exception("Could not load cogs.radio; /stream is unavailable")
 
     async def on_ready(self):
         log.info("Ready: %s | discord.py %s", self.user, discord.__version__)
@@ -113,8 +115,8 @@ class CrueFM(commands.Bot):
 def register(bot: CrueFM):
     @bot.tree.command(name="station", description="Switch radio station")
     @discord.app_commands.choices(name=[
-        discord.app_commands.Choice(name="CRUE FM 🤘  Metal/Hard Rock", value="crue"),
-        discord.app_commands.Choice(name="Q101 🎵  Underground 80s",    value="q101"),
+        discord.app_commands.Choice(name=label, value=key)
+        for key, (label, _) in STATIONS.items()
     ])
     async def station(interaction: discord.Interaction,
                       name: discord.app_commands.Choice[str]):
@@ -161,4 +163,6 @@ async def main():
     async with bot:
         await bot.start(TOKEN)
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())

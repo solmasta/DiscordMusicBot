@@ -11,6 +11,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.stations import PRESETS
+
 log = logging.getLogger("radio")
 
 # Live streams: reconnect aggressively, no video, no stdin interference.
@@ -20,16 +22,6 @@ FFMPEG_OPTIONS = {
         "-reconnect_delay_max 5 -nostdin"
     ),
     "options": "-vn",
-}
-
-# A few handy presets (autocompleted in /radio play). Add your own!
-PRESETS: dict[str, str] = {
-    "SomaFM Groove Salad": "https://ice1.somafm.com/groovesalad-128-mp3",
-    "SomaFM Defcon": "https://ice1.somafm.com/defcon-128-mp3",
-    "Radio Paradise (Main)": "https://stream.radioparadise.com/mp3-128",
-    "Radio Paradise (Mellow)": "https://stream.radioparadise.com/mellow-128",
-    "NTS Radio 1": "https://stream-relay-geo.ntslive.net/stream",
-    "KEXP Seattle": "https://kexp.streamguys1.com/kexp128.mp3",
 }
 
 MAX_RECONNECTS = 5
