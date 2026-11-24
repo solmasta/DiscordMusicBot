@@ -14,11 +14,24 @@ import bot
 class Stations(unittest.TestCase):
     def test_default_station_exists(self):
         self.assertIn(bot.STATION, bot.STATIONS)
+        self.assertEqual(bot.STATION, next(iter(bot.STATIONS)))
 
-    def test_streams_are_https(self):
-        for name, url in bot.STATIONS.values():
-            self.assertTrue(name)
-            self.assertTrue(url.startswith("https://"), url)
+    def test_station_table_fits_discord_limits(self):
+        self.assertLessEqual(len(bot.STATIONS), 25)  # max slash-command choices
+        labels = [label for label, _ in bot.STATIONS.values()]
+        self.assertEqual(len(labels), len(set(labels)))
+        for label, url in bot.STATIONS.values():
+            self.assertTrue(0 < len(label) <= 100)
+            self.assertRegex(url, r"^https?://")
+            self.assertLessEqual(len(url), 100)  # also used as an autocomplete value
+
+    def test_chicago_stations_present(self):
+        self.assertIn("wkqx", bot.STATIONS)  # Q101
+
+    def test_stream_presets_include_every_station(self):
+        from cogs.stations import PRESETS
+        for label, url in bot.STATIONS.values():
+            self.assertEqual(PRESETS[label], url)
 
 
 class Behaviour(unittest.IsolatedAsyncioTestCase):
@@ -33,13 +46,16 @@ class Behaviour(unittest.IsolatedAsyncioTestCase):
         await self.bot.setup_hook()
         names = {c.name for c in self.bot.tree.get_commands()}
         self.assertEqual(names, {"station", "nowplaying", "stream"})
+        station = self.bot.tree.get_command("station")
+        choices = station._params["name"].choices
+        self.assertEqual([c.value for c in choices], list(bot.STATIONS))
 
     async def test_play_streams_the_current_station(self):
         vc = MagicMock()
-        self.bot.station = "q101"
+        self.bot.station = "wkqx"
         with patch.object(discord.FFmpegOpusAudio, "from_probe", new=AsyncMock(return_value="src")) as probe:
             await self.bot._play(vc)
-        self.assertEqual(probe.call_args.args[0], bot.STATIONS["q101"][1])
+        self.assertEqual(probe.call_args.args[0], bot.STATIONS["wkqx"][1])
         vc.play.assert_called_once()
         self.assertEqual(vc.play.call_args.args[0], "src")
 

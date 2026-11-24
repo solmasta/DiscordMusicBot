@@ -7,13 +7,15 @@ runs every 20 seconds: if the stream drops or the bot is disconnected, it rejoin
 
 | Command | What it does |
 |---|---|
-| `/station` | Switch the default station: **CRUE FM** (SomaFM Metal) or **Q101** (SomaFM Underground 80s). Also cancels any `/stream`. |
+| `/station` | Switch the default station from the drop-down: CRUE FM (SomaFM Metal), Underground 80s, and Chicago stations (Q101, The Loop, WLS-FM, WGCI, WBEZ, Vocalo, WFMT, WDCB, WLUW, WCKG, The Score, WNUA). Also cancels any `/stream`. |
 | `/nowplaying` | Show the current default station and its stream URL. |
 | `/stream play <url>` | Play any http(s) radio URL (Icecast/Shoutcast mp3/aac/ogg, `.m3u`/`.pls` playlists, HLS) or a preset, in your voice channel. Reconnects up to 5 times if it drops. |
 | `/stream nowplaying` | Station name and current song, when the station publishes it (ICY metadata). |
 | `/stream volume <1–100>` | Volume for the custom stream. |
-| `/stream stations` | List preset stations (edit `PRESETS` in `cogs/radio.py`). |
+| `/stream stations` | List preset stations. |
 | `/stream stop` | Stop the custom stream and go back to the default station. |
+
+Station lists live in `cogs/stations.py` (stream URLs can change without notice, so update them there if one goes quiet).
 
 The bot also serves `/` and `/health` on `PORT` (default 8080) for host health checks.
 
