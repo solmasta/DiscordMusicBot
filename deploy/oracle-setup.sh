@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Usage (on an Ubuntu server):
 #   curl -fsSL https://raw.githubusercontent.com/solmasta/DiscordMusicBot/main/deploy/oracle-setup.sh \
-#     | sudo bash -s -- <DISCORD_TOKEN> [VOICE_CHANNEL_ID]
+#     | sudo bash -s -- <DISCORD_TOKEN>
 # Re-run it any time to pull the latest bot and restart.
 set -euo pipefail
 
-TOKEN="${1:?Usage: sudo bash -s -- <DISCORD_TOKEN> [VOICE_CHANNEL_ID]}"
-CHANNEL="${2:-1572640248691822632}"
+TOKEN="${1:?Usage: sudo bash -s -- <DISCORD_TOKEN>}"
 DIR=/opt/crue-fm
 
 if ! command -v apt-get >/dev/null; then
@@ -29,7 +28,7 @@ python3 -m venv "$DIR/venv"
 "$DIR/venv/bin/pip" install -r "$DIR/requirements.txt"
 
 install -m 600 /dev/null /etc/crue-fm.env
-printf 'DISCORD_TOKEN=%s\nVOICE_CHANNEL_ID=%s\n' "$TOKEN" "$CHANNEL" > /etc/crue-fm.env
+printf 'DISCORD_TOKEN=%s\n' "$TOKEN" > /etc/crue-fm.env
 
 cat > /etc/systemd/system/crue-fm.service <<EOF
 [Unit]

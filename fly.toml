@@ -3,9 +3,6 @@ primary_region = "ord"
 
 [build]
 
-[env]
-VOICE_CHANNEL_ID = "1572640248691822632"
-
 # Secret (set once, never committed):
 #   fly secrets set DISCORD_TOKEN=your_token_here
 

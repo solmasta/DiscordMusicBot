@@ -131,6 +131,9 @@ class Radio(commands.Cog):
                 await vc.move_to(voice.channel)
         else:
             vc = await voice.channel.connect(self_deaf=True)
+        home = getattr(self.bot, "home", None)
+        if home is not None:  # let the bot's guard keep the radio in this channel
+            home[interaction.guild.id] = vc.channel.id
         return vc
 
     def _start(self, guild: discord.Guild, vc: discord.VoiceClient):
