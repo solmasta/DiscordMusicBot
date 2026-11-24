@@ -34,7 +34,11 @@ class CrueFM(commands.Bot):
         self.station = STATION
 
     async def setup_hook(self):
-        await self.load_extension("cogs.radio")
+        try:
+            await self.load_extension("cogs.radio")
+        except Exception:
+            # The default station must keep playing even if the /stream add-on can't load.
+            log.exception("Could not load cogs.radio; /stream is unavailable")
 
     async def on_ready(self):
         log.info("Ready: %s | discord.py %s", self.user, discord.__version__)
@@ -161,4 +165,6 @@ async def main():
     async with bot:
         await bot.start(TOKEN)
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())
