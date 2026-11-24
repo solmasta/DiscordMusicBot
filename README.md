@@ -7,7 +7,7 @@ runs every 20 seconds: if the stream drops or the bot is disconnected, it rejoin
 
 | Command | What it does |
 |---|---|
-| `/station` | Switch the default station from the drop-down: CRUE FM (SomaFM Metal), Underground 80s, and Chicago stations (Q101, The Loop, WLS-FM, WGCI, WBEZ, Vocalo, WFMT, WDCB, WLUW, WCKG, The Score, WNUA). Also cancels any `/stream`. |
+| `/station` | Switch the default station from the drop-down: CRUE FM (SomaFM Metal), Underground 80s, and Chicago stations (Q101, The Loop, WLS-FM, KISS FM, The Drive, WGCI, WBEZ, Vocalo, WFMT, WDCB, WLUW, WCKG, The Score, WNUA). Also cancels any `/stream`. |
 | `/nowplaying` | Show the current default station and its stream URL. |
 | `/stream play <url>` | Play any http(s) radio URL (Icecast/Shoutcast mp3/aac/ogg, `.m3u`/`.pls` playlists, HLS) or a preset, in your voice channel. Reconnects up to 5 times if it drops. |
 | `/stream nowplaying` | Station name and current song, when the station publishes it (ICY metadata). |

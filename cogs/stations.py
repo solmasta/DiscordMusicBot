@@ -13,6 +13,8 @@ STATIONS: dict[str, tuple[str, str]] = {
     "wkqx":   ("Q101 (WKQX 101.1)",              f"{_STW}/WKQXFM.mp3"),
     "wlup":   ("97.9 The Loop (WLUP)",           f"{_STW}/WLUPFM.mp3"),
     "wls":    ("94.7 WLS-FM",                    f"{_STW}/WLSFM.mp3"),
+    "wksc":   ("103.5 KISS FM (WKSC)",           "https://stream.revma.ihrhls.com/zc849"),
+    "wdrv":   ("97.1 The Drive (WDRV)",          f"{_STW}/WDRVFM.mp3"),
     "wgci":   ("107.5 WGCI",                     "https://stream.revma.ihrhls.com/zc841"),
     "wbez":   ("91.5 WBEZ Public Radio",         "https://stream.wbez.org/wbez128.mp3"),
     "vocalo": ("Vocalo",                         "http://stream.vocalo.org/vocalo128"),
