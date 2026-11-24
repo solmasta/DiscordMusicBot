@@ -14,7 +14,6 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 TOKEN            = os.environ["DISCORD_TOKEN"]
-VOICE_CHANNEL_ID = int(os.environ["VOICE_CHANNEL_ID"])
 
 STATION = DEFAULT_STATION
 
@@ -30,6 +29,7 @@ class CrueFM(commands.Bot):
         intents.voice_states = True
         super().__init__(command_prefix="!", intents=intents)
         self.station = STATION
+        self.home: dict[int, int] = {}  # guild id -> voice channel the radio stays in
 
     async def setup_hook(self):
         try:
@@ -40,6 +40,11 @@ class CrueFM(commands.Bot):
 
     async def on_ready(self):
         log.info("Ready: %s | discord.py %s", self.user, discord.__version__)
+        log.info("Invite: %s", discord.utils.oauth_url(
+            self.user.id,
+            permissions=discord.Permissions(view_channel=True, connect=True, speak=True),
+            scopes=("bot", "applications.commands"),
+        ))
         await self._sync_commands()
         await self._set_presence()
         if not self.guard.is_running():
@@ -60,20 +65,30 @@ class CrueFM(commands.Bot):
 
     @tasks.loop(seconds=20)
     async def guard(self):
-        try:
-            ch = self.get_channel(VOICE_CHANNEL_ID) \
-                 or await self.fetch_channel(VOICE_CHANNEL_ID)
-            vc = discord.utils.get(self.voice_clients, guild=ch.guild)
+        """Keep the radio in each server's chosen channel: rejoin and restart if it drops."""
+        for guild_id, channel_id in list(self.home.items()):
+            try:
+                await self._keep(guild_id, channel_id)
+            except Exception:
+                log.exception("guard error in guild %s", guild_id)
 
-            if vc is None:
-                vc = await ch.connect()
-                log.info("Joined %s", ch.name)
-                await self._diagnose(ch)
+    async def _keep(self, guild_id: int, channel_id: int):
+        ch = self.get_channel(channel_id)
+        if ch is None:  # channel deleted, or the bot was removed from the server
+            log.warning("Channel %s is gone; no longer keeping the radio there", channel_id)
+            self.home.pop(guild_id, None)
+            return
+        vc = discord.utils.get(self.voice_clients, guild=ch.guild)
 
-            if not vc.is_playing() and not vc.is_paused():
-                await self._play(vc)
-        except Exception:
-            log.exception("guard error")
+        if vc is None:
+            vc = await ch.connect(self_deaf=True)
+            log.info("Rejoined %s", ch.name)
+            await self._diagnose(ch)
+        elif vc.channel and vc.channel.id != channel_id:
+            self.home[guild_id] = vc.channel.id  # someone moved the bot; stay where it was put
+
+        if not vc.is_playing() and not vc.is_paused():
+            await self._play(vc)
 
     @guard.before_loop
     async def _wait(self):
@@ -113,6 +128,48 @@ class CrueFM(commands.Bot):
 
 
 def register(bot: CrueFM):
+    @bot.tree.command(name="join", description="Join your voice channel and start the radio")
+    @discord.app_commands.guild_only()
+    async def join(interaction: discord.Interaction):
+        voice = getattr(interaction.user, "voice", None)
+        if not voice or not voice.channel:
+            await interaction.response.send_message(
+                "Join a voice channel first, then run `/join`.", ephemeral=True)
+            return
+        ch = voice.channel
+        perms = ch.permissions_for(interaction.guild.me)
+        if not (perms.view_channel and perms.connect and perms.speak):
+            await interaction.response.send_message(
+                f"I need **View Channel**, **Connect** and **Speak** in {ch.mention}.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        vc = discord.utils.get(bot.voice_clients, guild=interaction.guild)
+        if vc:
+            if vc.channel != ch:
+                await vc.move_to(ch)
+        else:
+            vc = await ch.connect(self_deaf=True)
+            await bot._diagnose(ch)
+        bot.home[interaction.guild.id] = ch.id
+        if not vc.is_playing() and not vc.is_paused():
+            await bot._play(vc)
+        label, _ = STATIONS[bot.station]
+        await interaction.followup.send(f"Joined {ch.mention}, playing **{label}**.")
+
+    @bot.tree.command(name="leave", description="Stop the radio and leave the voice channel")
+    @discord.app_commands.guild_only()
+    async def leave(interaction: discord.Interaction):
+        bot.home.pop(interaction.guild.id, None)  # so the guard doesn't bring it back
+        radio = bot.get_cog("Radio")
+        if radio:
+            radio.clear(interaction.guild.id)
+        vc = discord.utils.get(bot.voice_clients, guild=interaction.guild)
+        if not vc:
+            await interaction.response.send_message("I'm not in a voice channel.", ephemeral=True)
+            return
+        await vc.disconnect()
+        await interaction.response.send_message("Left the voice channel. Use `/join` to bring me back.")
+
     @bot.tree.command(name="station", description="Switch radio station")
     @discord.app_commands.choices(name=[
         discord.app_commands.Choice(name=label, value=key)
@@ -123,7 +180,7 @@ def register(bot: CrueFM):
         vc = discord.utils.get(bot.voice_clients, guild=interaction.guild)
         if not vc:
             await interaction.response.send_message(
-                "Not in a voice channel yet — try again in a moment.", ephemeral=True)
+                "I'm not in a voice channel yet. Join one and use `/join` first.", ephemeral=True)
             return
         await interaction.response.defer()
         bot.station = name.value

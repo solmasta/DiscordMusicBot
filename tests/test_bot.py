@@ -4,7 +4,6 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
-os.environ.setdefault("VOICE_CHANNEL_ID", "123")
 
 import discord
 
@@ -45,7 +44,7 @@ class Behaviour(unittest.IsolatedAsyncioTestCase):
         bot.register(self.bot)
         await self.bot.setup_hook()
         names = {c.name for c in self.bot.tree.get_commands()}
-        self.assertEqual(names, {"station", "nowplaying", "stream"})
+        self.assertEqual(names, {"station", "nowplaying", "stream", "join", "leave"})
         station = self.bot.tree.get_command("station")
         choices = station._params["name"].choices
         self.assertEqual([c.value for c in choices], list(bot.STATIONS))
@@ -59,25 +58,100 @@ class Behaviour(unittest.IsolatedAsyncioTestCase):
         vc.play.assert_called_once()
         self.assertEqual(vc.play.call_args.args[0], "src")
 
+    def _guard_env(self, vc, channel):
+        """Patch the bot so _keep sees `channel` and `vc` as the guild's voice state."""
+        return (
+            patch.object(self.bot, "get_channel", return_value=channel),
+            patch.object(discord.utils, "get", return_value=vc),
+            patch.object(type(self.bot), "voice_clients", new_callable=PropertyMock,
+                         return_value=[vc] if vc else []),
+        )
+
+    async def _run_guard(self, vc, channel):
+        p1, p2, p3 = self._guard_env(vc, channel)
+        with p1, p2, p3:
+            await self.bot.guard.coro(self.bot)
+
+    async def test_guard_does_nothing_with_no_home_channel(self):
+        self.bot._play = AsyncMock()
+        await self.bot.guard.coro(self.bot)  # no /join yet: must not need any channel id
+        self.bot._play.assert_not_awaited()
+
     async def test_guard_restarts_playback_when_idle(self):
         vc = MagicMock(is_playing=lambda: False, is_paused=lambda: False)
-        channel = MagicMock(guild=MagicMock())
+        vc.channel.id = 5
+        self.bot.home[1] = 5
         self.bot._play = AsyncMock()
-        with patch.object(self.bot, "get_channel", return_value=channel), \
-             patch.object(discord.utils, "get", return_value=vc), \
-             patch.object(type(self.bot), "voice_clients", new_callable=PropertyMock, return_value=[vc]):
-            await self.bot.guard.coro(self.bot)
+        await self._run_guard(vc, MagicMock(guild=MagicMock()))
         self.bot._play.assert_awaited_once_with(vc)
 
     async def test_guard_leaves_playing_stream_alone(self):
         vc = MagicMock(is_playing=lambda: True, is_paused=lambda: False)
-        channel = MagicMock(guild=MagicMock())
+        vc.channel.id = 5
+        self.bot.home[1] = 5
         self.bot._play = AsyncMock()
-        with patch.object(self.bot, "get_channel", return_value=channel), \
-             patch.object(discord.utils, "get", return_value=vc), \
-             patch.object(type(self.bot), "voice_clients", new_callable=PropertyMock, return_value=[vc]):
-            await self.bot.guard.coro(self.bot)
+        await self._run_guard(vc, MagicMock(guild=MagicMock()))
         self.bot._play.assert_not_awaited()
+
+    async def test_guard_rejoins_when_disconnected(self):
+        new_vc = MagicMock(is_playing=lambda: False, is_paused=lambda: False)
+        channel = MagicMock(guild=MagicMock(), connect=AsyncMock(return_value=new_vc))
+        self.bot.home[1] = 5
+        self.bot._play = AsyncMock()
+        self.bot._diagnose = AsyncMock()
+        await self._run_guard(None, channel)
+        channel.connect.assert_awaited_once()
+        self.bot._play.assert_awaited_once_with(new_vc)
+
+    async def test_guard_follows_a_moved_bot(self):
+        vc = MagicMock(is_playing=lambda: True, is_paused=lambda: False)
+        vc.channel.id = 9
+        self.bot.home[1] = 5
+        await self._run_guard(vc, MagicMock(guild=MagicMock()))
+        self.assertEqual(self.bot.home[1], 9)
+
+    async def test_guard_forgets_a_deleted_channel(self):
+        self.bot.home[1] = 5
+        with patch.object(self.bot, "get_channel", return_value=None):
+            await self.bot.guard.coro(self.bot)
+        self.assertNotIn(1, self.bot.home)
+
+    async def test_join_uses_the_callers_channel(self):
+        bot.register(self.bot)
+        ch = MagicMock(id=77)
+        ch.permissions_for.return_value = MagicMock(view_channel=True, connect=True, speak=True)
+        vc = MagicMock(is_playing=lambda: False, is_paused=lambda: False)
+        ch.connect = AsyncMock(return_value=vc)
+        inter = MagicMock(guild=MagicMock(id=1))
+        inter.user.voice.channel = ch
+        inter.response.defer = AsyncMock()
+        inter.followup.send = AsyncMock()
+        self.bot._play = AsyncMock()
+        self.bot._diagnose = AsyncMock()
+        with patch.object(discord.utils, "get", return_value=None):
+            await self.bot.tree.get_command("join").callback(inter)
+        self.assertEqual(self.bot.home[1], 77)
+        self.bot._play.assert_awaited_once_with(vc)
+
+    async def test_join_requires_a_voice_channel(self):
+        bot.register(self.bot)
+        inter = MagicMock(guild=MagicMock(id=1))
+        inter.user.voice = None
+        inter.response.send_message = AsyncMock()
+        await self.bot.tree.get_command("join").callback(inter)
+        self.assertNotIn(1, self.bot.home)
+        inter.response.send_message.assert_awaited_once()
+
+    async def test_leave_stops_the_guard_from_rejoining(self):
+        bot.register(self.bot)
+        vc = MagicMock(disconnect=AsyncMock())
+        self.bot.home[1] = 5
+        inter = MagicMock(guild=MagicMock(id=1))
+        inter.response.send_message = AsyncMock()
+        with patch.object(discord.utils, "get", return_value=vc):
+            await self.bot.tree.get_command("leave").callback(inter)
+        vc.disconnect.assert_awaited_once()
+        self.assertNotIn(1, self.bot.home)
 
     async def test_bot_survives_a_broken_stream_cog(self):
         with patch.object(self.bot, "load_extension", side_effect=RuntimeError("boom")):
