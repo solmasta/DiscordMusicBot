@@ -1,23 +1,25 @@
-# fly.toml app configuration file generated for discordmusicbot-k-zztq on 2026-10-03T23:44:53Z
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
-app = 'discordmusicbot-k-zztq'
-primary_region = 'ams'
+app = "discordmusicbot-k-zztq"
+primary_region = "ord"
 
 [build]
 
+[env]
+VOICE_CHANNEL_ID = "1572640248691822632"
+
+# Secret (set once, never committed):
+#   fly secrets set DISCORD_TOKEN=your_token_here
+
+# Worker bot with a tiny health server; never auto-stop it for lack of web traffic.
 [http_service]
   internal_port = 8080
-  force_https = true
-  auto_stop_machines = 'stop'
-  auto_start_machines = true
-  min_machines_running = 0
-  processes = ['app']
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+[[restart]]
+  policy = "always"
+  max_retries = 10
 
 [[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 256
+  size = "shared-cpu-1x"
+  memory = "512mb"

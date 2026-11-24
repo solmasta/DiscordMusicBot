@@ -1,135 +1,64 @@
-# Discord Music Bot
+# Crüe FM: Q101 24/7
 
-A Discord bot that plays audio from YouTube, SoundCloud, direct URLs, and more — 24/7.
+A Discord bot that sits in one voice channel and plays **Q101** around the clock. If the stream drops or the bot is
+disconnected, it rejoins and restarts within seconds. One station, no rotation.
 
-## Features
-
-| Command | Description |
-|---|---|
-| `/play <query>` | Play a song from a URL or search YouTube |
-| `/skip` | Skip the current song |
-| `/pause` | Pause playback |
-| `/resume` | Resume playback |
-| `/stop` | Stop and clear the queue |
-| `/queue` | Show the current queue |
-| `/nowplaying` | Show what's currently playing |
-| `/volume <1–100>` | Adjust playback volume |
-| `/loop` | Toggle looping the current track |
-| `/loopqueue` | Toggle looping the entire queue |
-| `/shuffle` | Shuffle the queue |
-| `/remove <position>` | Remove a song from the queue |
-| `/move <from> <to>` | Reorder a song in the queue |
-| `/clearqueue` | Clear the queue without stopping playback |
-| `/join` | Pull the bot into your voice channel |
-| `/leave` | Disconnect the bot |
-
-### Internet radio
-
-| Command | Description |
-|---|---|
-| `/radio play <url>` | Stream any http(s) radio URL (Icecast/Shoutcast mp3/aac/ogg, `.m3u`/`.pls` playlists, HLS) or pick a preset |
-| `/radio nowplaying` | Station name and current song (ICY metadata) |
-| `/radio volume <1–100>` | Adjust volume |
-| `/radio stations` | List presets (edit `PRESETS` in `cogs/radio.py`) |
-| `/radio stop` | Stop and leave |
-
-Streams auto-reconnect (up to 5 tries with backoff) if they drop. Starting radio clears the music queue.
-
-## Requirements
-
-- Python 3.10+
-- FFmpeg (must be in PATH)
-- A Discord bot token
+- **Live Now Playing card** in the voice channel's chat (or `NOW_PLAYING_CHANNEL_ID`): song, artist, album art, progress
+  bar and an animated equalizer, updated as the radio plays.
+- **Join prompt:** when someone joins the radio channel, the radio is muted for a moment while they choose
+  **Approve** or **Dismiss**, so it never blasts them. It comes back by itself after 30 seconds.
+- `/radio` shows what's playing.
+- **Custom streams:** `/stream play <url>` plays any http(s) radio URL (Icecast/Shoutcast, `.m3u`/`.pls`, HLS) or a preset in
+  your voice channel, with auto-reconnect. `/stream nowplaying` shows the station and current song, `/stream volume`,
+  `/stream stations`, and `/stream stop` returns to the default station. `/station` also cancels a custom stream.
+- **Music commands** (home server only, set with `GUILD_ID`): `/play`, `/skip`, `/pause`, `/resume`, `/stop`, `/queue`,
+  `/nowplaying`, `/volume`, `/loop`, `/loopqueue`, `/shuffle`, `/remove`, `/move`, `/clearqueue`, `/join`, `/leave`, `/help`.
+  Note: `/play` uses yt-dlp for YouTube and similar sites, so check those sites' terms before using it.
 
 ## Setup
 
-### 1. Create a Discord Application & Bot
+1. Create a bot at https://discord.com/developers/applications (no privileged intents needed) and copy its token.
+2. Invite it with scopes `bot` and `applications.commands`, and permissions **View Channel**, **Connect**, **Speak**,
+   **Send Messages**, **Embed Links**, **Attach Files** and **Read Message History** (the last four are for the card).
+3. Right-click the voice channel (Developer Mode on) and **Copy Channel ID**.
+4. `cp .env.example .env` and fill in `DISCORD_TOKEN` and `RADIO_CHANNEL_ID`. The bot reads `.env` itself.
 
-1. Go to https://discord.com/developers/applications
-2. Click **New Application**, give it a name.
-3. Go to **Bot** → **Add Bot**.
-4. Under **Privileged Gateway Intents**, enable **Message Content Intent** and **Server Members Intent**.
-5. Copy the **Token** — you'll need it shortly.
+## Run it
 
-### 2. Invite the Bot to Your Server
-
-Generate an invite URL from **OAuth2 → URL Generator**:
-- Scopes: `bot`, `applications.commands`
-- Bot permissions: `Connect`, `Speak`, `Send Messages`, `Embed Links`, `Read Message History`
-
-### 3. Install Dependencies
+Locally (Python 3.10+ and FFmpeg on your PATH):
 
 ```bash
-# Install FFmpeg
-# Ubuntu/Debian:
-sudo apt install ffmpeg
-# macOS (Homebrew):
-brew install ffmpeg
-# Windows: download from https://ffmpeg.org/download.html and add to PATH
-
-# Install Python packages
 pip install -r requirements.txt
-```
-
-### 4. Configure Environment
-
-```bash
-cp .env.example .env
-# Edit .env and set DISCORD_TOKEN=your_token_here
-# Optionally set GUILD_ID=your_server_id for instant slash command registration
-```
-
-### 5. Run
-
-```bash
 python bot.py
 ```
 
-## Running 24/7 (Linux systemd)
+On Windows PowerShell, if `pip` is blocked by an Application Control policy, use `python -m pip install -r requirements.txt`.
 
-Create `/etc/systemd/system/musicbot.service`:
-
-```ini
-[Unit]
-Description=Discord Music Bot
-After=network.target
-
-[Service]
-Type=simple
-User=YOUR_USER
-WorkingDirectory=/path/to/DiscordMusicBot
-ExecStart=/usr/bin/python3 /path/to/DiscordMusicBot/bot.py
-Restart=always
-RestartSec=10
-EnvironmentFile=/path/to/DiscordMusicBot/.env
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Then:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable musicbot
-sudo systemctl start musicbot
-sudo systemctl status musicbot
-```
-
-## Running 24/7 (Docker / cloud)
-
-A minimal Dockerfile is provided:
+With Docker (for a server; restarts after crashes and reboots):
 
 ```bash
-docker build -t musicbot .
-docker run -d --env-file .env --restart unless-stopped musicbot
+docker compose up -d --build
+docker compose logs -f
 ```
 
-## Supported Sources
+## Free 24/7 hosting
 
-yt-dlp supports 1000+ sites including:
-- YouTube (videos, playlists — first track played from playlists)
-- SoundCloud
-- Bandcamp
-- Twitch streams
-- Direct MP3/audio URLs
-- Many more
+A voice bot needs a machine that stays on, which rules out most free "sleeping" web hosts. Options: any computer you
+leave on (a spare PC or Raspberry Pi) or an Oracle Cloud "Always Free" VM (check their current limits and idle-reclaim
+rules). On a fresh Ubuntu VM:
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
+git clone https://github.com/solmasta/DiscordMusicBot.git && cd DiscordMusicBot
+cp .env.example .env && nano .env
+sudo docker compose up -d --build
+```
+
+## Settings (`.env`)
+
+See `.env.example`: `GUILD_ID` (home server for `/play`), `NOW_PLAYING_CHANNEL_ID`, `JOIN_MUTE`, `BRANDING` (off by
+default; turns on renaming the bot to Crüe FM with its icon and banner), `RADIO_URL` (a different stream).
+
+## Tests
+
+`python -m unittest discover` (also runs on pull requests in GitHub Actions).

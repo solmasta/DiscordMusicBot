@@ -1,4 +1,4 @@
-"""Internet radio: stream any http(s) audio URL (Icecast/Shoutcast/HLS/MP3/AAC/...)
+"""Custom stream URLs: play any http(s) audio URL (Icecast/Shoutcast/HLS/MP3/AAC/...)
 into a voice channel, with auto-reconnect when the stream drops."""
 import asyncio
 import logging
@@ -106,7 +106,7 @@ async def fetch_now_playing(session: aiohttp.ClientSession, url: str) -> Optiona
 
 
 class Radio(commands.Cog):
-    radio = app_commands.Group(name="radio", description="Play internet radio streams", guild_only=True)
+    stream = app_commands.Group(name="stream", description="Play any radio stream URL (/stream stop returns to the default station)", guild_only=True)
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -119,6 +119,10 @@ class Radio(commands.Cog):
     async def cog_unload(self):
         if self._session:
             await self._session.close()
+
+    def clear(self, guild_id: int):
+        """Forget the custom stream so its end/reconnect logic stays out of the way."""
+        self._state(guild_id).station = None
 
     def _state(self, guild_id: int) -> RadioState:
         return self._states.setdefault(guild_id, RadioState())
@@ -180,7 +184,7 @@ class Radio(commands.Cog):
             for n, u in PRESETS.items() if current.lower() in n.lower()
         ][:25]
 
-    @radio.command(name="play", description="Stream a radio URL (or pick a preset)")
+    @stream.command(name="play", description="Stream a radio URL (or pick a preset)")
     @app_commands.describe(url="Stream URL (mp3/aac/ogg/m3u/pls/HLS) or a preset")
     @app_commands.autocomplete(url=_station_autocomplete)
     async def play(self, interaction: discord.Interaction, url: str):
@@ -201,32 +205,26 @@ class Radio(commands.Cog):
         state.retries = 0
         state.text_channel = interaction.channel
 
-        # Take over from the queue-based music cog if it's loaded.
-        music = self.bot.get_cog("Music")
-        if music:
-            ms = music._get_state(interaction.guild.id)
-            ms.queue.clear()
-            ms.current = None
-            ms.loop = ms.loop_queue = False
-
         self._start(interaction.guild, vc)
         embed = discord.Embed(title="📻 Now streaming", description=f"**{state.station.name}**",
                               color=discord.Color.blurple())
         embed.set_footer(text=f"Requested by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed)
 
-    @radio.command(name="stop", description="Stop the radio and leave the channel")
+    @stream.command(name="stop", description="Stop the custom stream and go back to the default station")
     async def stop(self, interaction: discord.Interaction):
         state = self._state(interaction.guild.id)
+        if not state.station:
+            await interaction.response.send_message("No custom stream is playing.", ephemeral=True)
+            return
         state.station = None
         vc = interaction.guild.voice_client
-        if not vc:
-            await interaction.response.send_message("Not connected.", ephemeral=True)
-            return
-        await vc.disconnect()
-        await interaction.response.send_message("⏹️ Radio stopped.")
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()
+        # The bot's guard loop restarts the default station within seconds.
+        await interaction.response.send_message("⏹️ Custom stream stopped, back to the default station.")
 
-    @radio.command(name="nowplaying", description="Show the station and current song")
+    @stream.command(name="nowplaying", description="Show the station and current song")
     async def nowplaying(self, interaction: discord.Interaction):
         station = self._state(interaction.guild.id).station
         if not station:
@@ -239,7 +237,7 @@ class Radio(commands.Cog):
         embed.add_field(name="Stream", value=station.url[:1000], inline=False)
         await interaction.followup.send(embed=embed)
 
-    @radio.command(name="volume", description="Set radio volume (1–100)")
+    @stream.command(name="volume", description="Set radio volume (1–100)")
     async def volume(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 100]):
         state = self._state(interaction.guild.id)
         state.volume = level / 100
@@ -248,11 +246,11 @@ class Radio(commands.Cog):
             vc.source.volume = state.volume
         await interaction.response.send_message(f"🔊 Volume set to {level}%")
 
-    @radio.command(name="stations", description="List preset stations")
+    @stream.command(name="stations", description="List preset stations")
     async def stations(self, interaction: discord.Interaction):
         lines = [f"• **{n}**" for n in PRESETS]
         await interaction.response.send_message(
-            "Presets (use `/radio play` and pick one, or paste any stream URL):\n" + "\n".join(lines),
+            "Presets (use `/stream play` and pick one, or paste any stream URL):\n" + "\n".join(lines),
             ephemeral=True,
         )
 
